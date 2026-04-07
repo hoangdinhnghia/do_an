@@ -2,8 +2,13 @@ import cv2
 import numpy as np
 from typing import List, Optional, Tuple
 
+from orm.staff_detection import crop_staffs
+
 # Định nghĩa NoteheadBBox: (x, y, w, h, cx, cy)
 NoteheadBBox = Tuple[int, int, int, int, int, int]
+
+# Kết quả cho một staff: (staff_index, staff_y_lines, noteheads, crop_img)
+NoteheadStaffResult = Tuple[int, List[int], List[NoteheadBBox], np.ndarray]
 
 def detect_notehead_contour(
     staff_crop_img: np.ndarray,
@@ -92,7 +97,47 @@ def annotate_noteheads(
         img_vis: ảnh đã annotate box/circle lên
     """
     img_vis = img.copy()
+    if img_vis.ndim == 2:
+        img_vis = cv2.cvtColor(img_vis, cv2.COLOR_GRAY2BGR)
     for (x, y, w, h, cx, cy) in noteheads:
         cv2.rectangle(img_vis, (x, y), (x + w, y + h), (0, 0, 255), 2)
         cv2.circle(img_vis, (cx, cy), 2, (255, 0, 0), -1)
     return img_vis
+
+
+def notehead_detection_pipeline(
+    img_no_staff: np.ndarray,
+    staff_lines: List[List[int]],
+    expand: int = 20,
+    min_area: int = 18,
+    max_area: int = 1200,
+    aspect_ratio: Tuple[float, float] = (0.45, 1.8),
+) -> List[NoteheadStaffResult]:
+    """
+    Pipeline phát hiện notehead trên toàn bộ các staff.
+
+    Args:
+        img_no_staff: Ảnh nhị phân (0/255) đã xóa dòng kẻ.
+        staff_lines:  Danh sách staff, mỗi staff là list 5 tọa độ y.
+        expand:       Số pixel mở rộng khi crop mỗi staff.
+        min_area, max_area, aspect_ratio: Tham số lọc notehead.
+
+    Returns:
+        List NoteheadStaffResult — mỗi phần tử là
+        (staff_index, staff_y_lines, noteheads, annotated_crop).
+    """
+    crops = crop_staffs(img_no_staff, staff_lines, expand=expand)
+    results: List[NoteheadStaffResult] = []
+
+    for idx, (staff_y, crop) in enumerate(zip(staff_lines, crops)):
+        noteheads = detect_notehead_contour(
+            crop,
+            staff_y=None,  # crop đã được cắt theo staff; không cần lọc thêm
+            min_area=min_area,
+            max_area=max_area,
+            aspect_ratio=aspect_ratio,
+        )
+        annotated = annotate_noteheads(crop, noteheads)
+        results.append((idx, staff_y, noteheads, annotated))
+
+    return results

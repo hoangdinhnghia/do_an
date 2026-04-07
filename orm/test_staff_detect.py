@@ -15,6 +15,7 @@ from orm.staff_detection import(
     detect_vertical_connectors,
 )
 from orm.staff_removal import staff_removal_pipeline
+from orm.notehead_detection import notehead_detection_pipeline
 
 
 def load_input_image(path: str) -> np.ndarray:
@@ -65,6 +66,9 @@ def process_one_image(img: np.ndarray):
 
     # ==== STAFF REMOVAL ====
     img_no_staff = staff_removal_pipeline(img_bin_255, staff_lines)
+
+    # ==== NOTEHEAD DETECTION ====
+    notehead_results = notehead_detection_pipeline(img_no_staff, staff_lines, expand=20)
 
     # ==== GROUP GRAND STAFF ====
     grand_staffs = group_grand_staff(staff_lines, img_bin=img_bin_255)
@@ -130,7 +134,10 @@ def process_one_image(img: np.ndarray):
 
         print(f"[GS {idx+1}] Upper: {upper}, Lower: {lower}, Crop shape: {crop.shape}")
 
-    return img_vis, crops, img_grand, grand_crops, img_no_staff
+    total_notes = sum(len(r[2]) for r in notehead_results)
+    print(f"[INFO] Notehead detect: {total_notes} notehead(s) trên {len(notehead_results)} staff")
+
+    return img_vis, crops, img_grand, grand_crops, img_no_staff, notehead_results
 
 
 # ========================= MAIN =========================
@@ -145,7 +152,7 @@ if ext == '.pdf':
     pages = load_pdf_pages(INPUT_PATH, dpi=300)
 
     for i, page_img in enumerate(pages):
-        img_vis, crops, img_grand, grand_crops, img_no_staff = process_one_image(page_img)
+        img_vis, crops, img_grand, grand_crops, img_no_staff, notehead_results = process_one_image(page_img)
 
         # ===== xuất staff detect =====
         cv2.imwrite(f'out/{base_name}_page_{i+1:03d}_staff_detected.png', img_vis)
@@ -163,11 +170,16 @@ if ext == '.pdf':
         # ===== xuất ảnh đã xóa dòng kẻ =====
         cv2.imwrite(f'out/{base_name}_page_{i+1:03d}_no_staff.png', img_no_staff)
 
-        print(f'✔ Trang {i+1}: {len(crops)} staff | {len(grand_crops)} grand staff')
+        # ===== xuất notehead annotated =====
+        for s_idx, _staff_y, noteheads, annotated in notehead_results:
+            cv2.imwrite(f'out/{base_name}_page_{i+1:03d}_notehead_{s_idx+1}.png', annotated)
+
+        total_notes = sum(len(r[2]) for r in notehead_results)
+        print(f'✔ Trang {i+1}: {len(crops)} staff | {len(grand_crops)} grand staff | {total_notes} notehead(s)')
 
 else:
     img = load_input_image(INPUT_PATH)
-    img_vis, crops, img_grand, grand_crops, img_no_staff = process_one_image(img)
+    img_vis, crops, img_grand, grand_crops, img_no_staff, notehead_results = process_one_image(img)
 
     # ===== staff detect =====
     cv2.imwrite(f'out_staff_detect/{base_name}_staff_detected.png', img_vis)
@@ -190,4 +202,11 @@ else:
     cv2.imwrite(f'out/{base_name}_no_staff.png', img_no_staff)
     print(f'✔ out/{base_name}_no_staff.png | shape={img_no_staff.shape}')
 
-    print(f'✔ Hoàn tất: {base_name}')
+    # ===== notehead annotated =====
+    for s_idx, _staff_y, noteheads, annotated in notehead_results:
+        out_note = f'out/{base_name}_notehead_{s_idx+1}.png'
+        cv2.imwrite(out_note, annotated)
+        print(f'✔ {out_note} | {len(noteheads)} notehead(s)')
+
+    total_notes = sum(len(r[2]) for r in notehead_results)
+    print(f'✔ Hoàn tất: {base_name} | {total_notes} notehead(s) tổng cộng')
