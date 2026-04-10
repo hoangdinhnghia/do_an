@@ -49,12 +49,31 @@ def group_peaks_to_staffs(
     cur = [ys[0]]
     for y in ys[1:]:
         gap = y - cur[-1]
-        if len(cur) < 5 or (abs(gap - np.median(np.diff(cur))) < spacing_tol * np.median(np.diff(cur))):
+        if len(cur) == 1:
+            # Chưa đủ điểm để ước lượng spacing, chấp nhận mọi gap hợp lý
             cur.append(y)
         else:
-            if len(cur) >= 3:
-                staffs.append(cur)
-            cur = [y]
+            median_gap = float(np.median(np.diff(cur)))
+            if median_gap <= 0:
+                cur.append(y)
+                continue
+            if len(cur) < 5:
+                # Dùng ngưỡng rộng hơn khi chưa đủ 5 dòng để thiết lập spacing,
+                # nhưng vẫn từ chối gap quá lớn (>2.5x expected) để tránh gộp
+                # nhầm dòng đầu tiên của staff kế vào nhóm hiện tại.
+                if gap <= median_gap * 2.5:
+                    cur.append(y)
+                else:
+                    if len(cur) >= 3:
+                        staffs.append(cur)
+                    cur = [y]
+            else:
+                if abs(gap - median_gap) < spacing_tol * median_gap:
+                    cur.append(y)
+                else:
+                    if len(cur) >= 3:
+                        staffs.append(cur)
+                    cur = [y]
     if len(cur) >= 3:
         staffs.append(cur)
     # Fix mỗi staff đủ 5 dòng
@@ -66,9 +85,15 @@ def group_peaks_to_staffs(
         elif 3 <= len(st) < 5:
             gaps = np.diff(st)
             avg = int(np.mean(gaps)) if len(gaps) else 10
-            while len(st) < 5:
+            missing = 5 - len(st)
+            # Bổ sung dòng thiếu đều cả hai đầu: trên và dưới
+            top_pad = missing // 2
+            bottom_pad = missing - top_pad
+            for _ in range(top_pad):
+                st.insert(0, int(st[0] - avg))
+            for _ in range(bottom_pad):
                 st.append(int(st[-1] + avg))
-            out.append(st)
+            out.append(sorted(st))
         elif len(st) > 5:
             out.append(st[:5])
     return out
@@ -94,7 +119,7 @@ def refine_staff_lines(
             else:
                 y_real = int(np.argmax(window_profile)+y_min)
             staff_refined.append(y_real)
-        result.append(staff_refined)
+        result.append(sorted(staff_refined))
     return result
 
 def detect_and_refine_staff_lines(
@@ -130,6 +155,17 @@ def detect_and_refine_staff_lines(
     # Group và refine
     staffs = group_peaks_to_staffs(ys, spacing_tol=0.22)
     staffs_refined = refine_staff_lines(staffs, img_bin, window=refine_window)
+
+    # Fallback: nếu không phát hiện được staff nào, thử lại với tham số dễ hơn
+    if not staffs_refined:
+        ys = find_peaks_profile(
+            profile,
+            smooth_sigma=profile_smooth * 1.5,
+            thresh_ratio=peak_thresh * 0.7,
+        )
+        staffs = group_peaks_to_staffs(ys, spacing_tol=0.30)
+        staffs_refined = refine_staff_lines(staffs, img_bin, window=refine_window)
+
     return staffs_refined
 
 def crop_staffs(
