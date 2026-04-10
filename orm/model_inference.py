@@ -1,21 +1,34 @@
-"""Dual-stream OMR pipeline using two ONNX models.
+"""Dual-stream OMR pipeline using two ONNX U-Net models.
 
-Stream 1 — Staffline Segmentation Model (unet_big / 1st_model.onnx)
-    Input : (N, 256, 256, 3) uint8 BGR patches
-    Output: (N, 256, 256, 3) float32 — softmax probabilities
-            channel 0 = background
-            channel 1 = staff line
-            channel 2 = music symbol
-    Role  : Locate the five staff lines of every staff system.
+Both models are based on the U-Net architecture from the oemer project
+(https://github.com/BreezeWhite/oemer).  The architecture definitions are
+in :mod:`orm.unet`.  The compiled ONNX checkpoints are stored in:
 
-Stream 2 — Detailed Semantic Model (seg_net / 2nd_model.onnx)
-    Input : (N, 288, 288, 3) uint8 BGR patches
-    Output: (N, 288, 288, 4) float32 — softmax probabilities
-            channel 0 = background
-            channel 1 = notehead
-            channel 2 = stem / beam
-            channel 3 = other symbol (clef, accidental, rest…)
-    Role  : Segment individual music symbols (noteheads, stems, etc.).
+    orm/checkpoints/unet_big/1st_model.onnx   (Staffline Segmentation U-Net)
+    orm/checkpoints/seg_net/2nd_model.onnx    (Detailed Semantic U-Net)
+
+Stream 1 — Staffline Segmentation U-Net  (unet_big / 1st_model.onnx)
+    Architecture : ``unet.semantic_segmentation(win_size=256, out_class=3)``
+                   U-Net encoder-decoder with Atrous Spatial Pyramid Pooling
+                   (ASPP) bottleneck and skip connections.
+    Input        : (N, 256, 256, 3) uint8 BGR patches
+    Output       : (N, 256, 256, 3) float32 — softmax probabilities
+                   channel 0 = background
+                   channel 1 = staff line
+                   channel 2 = music symbol
+    Role         : Locate the five staff lines of every staff system.
+
+Stream 2 — Detailed Semantic U-Net  (seg_net / 2nd_model.onnx)
+    Architecture : ``unet.u_net(win_size=288, out_class=4)``
+                   Lightweight U-Net with separable convolutions, multi-scale
+                   skip connections, and ASPP-style dilated bottleneck.
+    Input        : (N, 288, 288, 3) uint8 BGR patches
+    Output       : (N, 288, 288, 4) float32 — softmax probabilities
+                   channel 0 = background
+                   channel 1 = notehead
+                   channel 2 = stem / beam
+                   channel 3 = other symbol (clef, accidental, rest…)
+    Role         : Segment individual music symbols (noteheads, stems, etc.).
 
 Public API
 ----------
@@ -422,61 +435,6 @@ def run_dual_pipeline(
 
     # --- Stream 2: Detailed Semantic Segmentation ---
     semantic_map = semantic_model.predict_full(img_bgr, overlap=overlap, max_side=max_side)
-    noteheads = semantic_model.extract_noteheads(
-        semantic_map, conf_thresh=note_conf_thresh
-    )
-    symbol_mask = semantic_model.extract_symbol_mask(semantic_map)
-
-    return {
-        "staff_lines": staff_lines,
-        "noteheads": noteheads,
-        "staff_prob_map": staff_prob_map,
-        "semantic_map": semantic_map,
-        "symbol_mask": symbol_mask,
-    }
-    """End-to-end dual-stream OMR inference.
-
-    Stream 1 — Staffline Segmentation Model:
-        Runs unet_big to produce a pixel-level staff-line probability map,
-        then extracts the y-coordinates of every staff system.
-
-    Stream 2 — Detailed Semantic Model:
-        Runs seg_net to produce a per-pixel semantic probability map, then
-        detects individual noteheads and builds a full symbol mask.
-
-    Args:
-        img_bgr           : Input image in BGR format (uint8, any resolution).
-        staffline_model   : Pre-loaded StafflineSegmentationModel instance.
-                            If None a default instance is created automatically.
-        semantic_model    : Pre-loaded DetailedSemanticModel instance.
-                            If None a default instance is created automatically.
-        staff_conf_thresh : Probability threshold for staff-line pixels (stream 1).
-        note_conf_thresh  : Probability threshold for notehead pixels (stream 2).
-        overlap           : Tile-and-stitch overlap in pixels.
-
-    Returns:
-        A dict with keys:
-            'staff_lines'    : List[List[int]] — staffs found by stream 1.
-                               Each inner list contains 5 sorted y-coordinates.
-            'noteheads'      : List[(x,y,w,h,cx,cy)] — noteheads from stream 2.
-            'staff_prob_map' : np.ndarray (H,W,3) float32 — raw stream-1 output.
-            'semantic_map'   : np.ndarray (H,W,4) float32 — raw stream-2 output.
-            'symbol_mask'    : np.ndarray (H,W) uint8 — combined foreground mask
-                               derived from the stream-2 semantic map.
-    """
-    if staffline_model is None:
-        staffline_model = StafflineSegmentationModel()
-    if semantic_model is None:
-        semantic_model = DetailedSemanticModel()
-
-    # --- Stream 1: Staffline Segmentation ---
-    staff_prob_map = staffline_model.predict_full(img_bgr, overlap=overlap)
-    staff_lines = staffline_model.extract_staff_lines(
-        staff_prob_map, conf_thresh=staff_conf_thresh
-    )
-
-    # --- Stream 2: Detailed Semantic Segmentation ---
-    semantic_map = semantic_model.predict_full(img_bgr, overlap=overlap)
     noteheads = semantic_model.extract_noteheads(
         semantic_map, conf_thresh=note_conf_thresh
     )
