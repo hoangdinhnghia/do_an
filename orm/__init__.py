@@ -1,6 +1,6 @@
 import os
 
-MODULE_PATH = os.path.abspath(__file__ + "/..")
+MODULE_PATH = os.path.dirname(os.path.abspath(__file__))
 
 from .pitch import (  # noqa: E402
     assign_pitch,
