@@ -14,7 +14,7 @@ from orm.staff_detection import(
     group_grand_staff,
     detect_vertical_connectors,
 )
-
+from orm.staff_removal import staff_removal_pipeline
 
 def load_input_image(path: str) -> np.ndarray:
     img = cv2.imread(path)
@@ -57,11 +57,14 @@ def process_one_image(img: np.ndarray):
     img_bin = remove_noise(img_bin)
 
     # ==== DETECT STAFF ====
-    staff_lines = detect_and_refine_staff_lines(img_bin)
+    img_bin_255 = (img_bin * 255).astype(np.uint8)
+    staff_lines = detect_and_refine_staff_lines(img_bin_255)
+    
+    img_no_staff = staff_removal_pipeline(img_bin_255, staff_lines)
 
     # ==== GROUP GRAND STAFF ====
-    grand_staffs = group_grand_staff(staff_lines, img_bin=img_bin)
-    connectors = detect_vertical_connectors(img_bin, min_height=40, x_merge_tol=8)
+    grand_staffs = group_grand_staff(staff_lines, img_bin=img_bin_255)
+    connectors = detect_vertical_connectors(img_bin_255, min_height=40, x_merge_tol=8)
     print(f"[INFO] Staff detect: {len(staff_lines)} | Grand-staff ghép: {len(grand_staffs)}")
     print(f"[INFO] Vertical connectors detected: {len(connectors)}")
 
@@ -123,7 +126,7 @@ def process_one_image(img: np.ndarray):
 
         print(f"[GS {idx+1}] Upper: {upper}, Lower: {lower}, Crop shape: {crop.shape}")
 
-    return img_vis, crops, img_grand, grand_crops
+    return img_vis, crops, img_grand, grand_crops, img_no_staff
 
 
 # ========================= MAIN =========================
@@ -138,7 +141,7 @@ if ext == '.pdf':
     pages = load_pdf_pages(INPUT_PATH, dpi=300)
 
     for i, page_img in enumerate(pages):
-        img_vis, crops, img_grand, grand_crops = process_one_image(page_img)
+        img_vis, crops, img_grand, grand_crops, img_no_staff = process_one_image(page_img)
 
         # ===== xuất staff detect =====
         cv2.imwrite(f'out/{base_name}_page_{i+1:03d}_staff_detected.png', img_vis)
@@ -146,6 +149,9 @@ if ext == '.pdf':
         # ===== xuất từng staff =====
         for idx, crop in enumerate(crops):
             cv2.imwrite(f'out/{base_name}_page_{i+1:03d}_staff_{idx+1}.png', crop)
+            
+        # ===== xuất ảnh đã xóa dòng kẻ =====
+        cv2.imwrite(f'out/{base_name}_page_{i+1:03d}_no_staff.png', img_no_staff)
 
         # ===== xuất grand staff =====
         cv2.imwrite(f'out/{base_name}_page_{i+1:03d}_grand_staff.png', img_grand)
@@ -157,7 +163,7 @@ if ext == '.pdf':
 
 else:
     img = load_input_image(INPUT_PATH)
-    img_vis, crops, img_grand, grand_crops = process_one_image(img)
+    img_vis, crops, img_grand, grand_crops, img_no_staff = process_one_image(img)
 
     # ===== staff detect =====
     cv2.imwrite(f'out_staff_detect/{base_name}_staff_detected.png', img_vis)
@@ -175,5 +181,9 @@ else:
         out_crop = f'out/{base_name}_grand_{idx+1}.png'
         cv2.imwrite(out_crop, crop)
         print(f'✔ {out_crop} | shape={crop.shape}')
+    
+     # ===== ảnh đã xóa dòng kẻ =====
+    cv2.imwrite(f'out_no_staff/{base_name}_no_staff.png', img_no_staff)
+    print(f'✔ out_no_staff/{base_name}_no_staff.png | shape={img_no_staff.shape}')
 
     print(f'✔ Hoàn tất: {base_name}')
