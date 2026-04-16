@@ -45,7 +45,7 @@ Cách chạy
 ---------
 ::
 
-    cd /home/runner/work/do_an/do_an
+    cd <repo_root>
     pytest tests/test_step4_semantic_model.py -v
 """
 

@@ -32,7 +32,7 @@ Cách chạy
 ---------
 ::
 
-    cd /home/runner/work/do_an/do_an
+    cd <repo_root>
     pytest tests/test_step3_staffline_extraction.py -v
 """
 

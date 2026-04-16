@@ -35,7 +35,7 @@ Cách chạy
 ---------
 ::
 
-    cd /home/runner/work/do_an/do_an
+    cd <repo_root>
     pytest tests/test_step5_notehead_detection.py -v
 """
 

@@ -40,7 +40,7 @@ Cách chạy
 ---------
 ::
 
-    cd /home/runner/work/do_an/do_an
+    cd <repo_root>
     # Chỉ unit tests (không cần model):
     pytest tests/test_step2_staffline_model.py -v -k "not Integration"
 

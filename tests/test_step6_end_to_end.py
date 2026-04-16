@@ -35,7 +35,7 @@ Cách chạy
 ---------
 ::
 
-    cd /home/runner/work/do_an/do_an
+    cd <repo_root>
     # Unit tests (không cần model):
     pytest tests/test_step6_end_to_end.py -v -k "Unit"
 
