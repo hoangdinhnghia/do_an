@@ -1,4 +1,9 @@
 """Dual-stream OMR pipeline using two ONNX models.
+
+.. deprecated::
+    Prefer :mod:`orm.inference` for the model wrappers and :mod:`orm.ete` for
+    the end-to-end pipeline.  This module is kept for backwards compatibility.
+
 Stream 1 — Staffline Segmentation Model (unet_big / 1st_model.onnx)
     Input : (N, 256, 256, 3) uint8 BGR patches
     Output: (N, 256, 256, 3) float32 — softmax probabilities
@@ -26,20 +31,36 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from .staff_detection import find_peaks_profile, group_peaks_to_staffs, refine_staff_lines
+from .constant import (
+    M1_CH_STAFF,
+    M2_CH_NOTEHEAD,
+    M2_CH_STEM,
+    M2_CH_SYMBOL,
+    STAFFLINE_PATCH_SIZE,
+    SEMANTIC_PATCH_SIZE,
+    DEFAULT_OVERLAP,
+    DEFAULT_MAX_SIDE,
+    STAFF_CONF_THRESH,
+    NOTE_CONF_THRESH,
+    SYMBOL_CONF_THRESH,
+)
+from .logger import get_logger
+
+logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Checkpoint paths
 # ---------------------------------------------------------------------------
 _CHECKPOINT_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
 # ---------------------------------------------------------------------------
-# Channel-index constants
+# Channel-index constants (kept for backward-compat; use orm.constant instead)
 # ---------------------------------------------------------------------------
 _M1_CH_BG = 0
-_M1_CH_STAFF = 1
+_M1_CH_STAFF = M1_CH_STAFF
 _M1_CH_SYMBOL = 2
 _M2_CH_BG = 0
-_M2_CH_NOTEHEAD = 1
-_M2_CH_STEM = 2
-_M2_CH_SYMBOL = 3
+_M2_CH_NOTEHEAD = M2_CH_NOTEHEAD
+_M2_CH_STEM = M2_CH_STEM
+_M2_CH_SYMBOL = M2_CH_SYMBOL
 # ---------------------------------------------------------------------------
 # Tile-and-stitch helper
 # ---------------------------------------------------------------------------
@@ -104,7 +125,7 @@ class StafflineSegmentationModel:
     Each (256×256) BGR patch is classified at the pixel level into three
     classes: background (0), staff line (1), and music symbol (2).
     """
-    PATCH_SIZE: int = 256
+    PATCH_SIZE: int = STAFFLINE_PATCH_SIZE
     STAFF_CHANNEL: int = _M1_CH_STAFF
     def __init__(self, model_path: Optional[str] = None) -> None:
         if model_path is None:
@@ -112,6 +133,7 @@ class StafflineSegmentationModel:
         self._session = ort.InferenceSession(model_path)
         self._in_name = self._session.get_inputs()[0].name
         self._out_name = self._session.get_outputs()[0].name
+        logger.info("Loaded staffline model: %s", model_path)
     def predict_patch(self, patch: np.ndarray) -> np.ndarray:
         """Run inference on a single (256, 256, 3) uint8 BGR patch.
         Returns:
@@ -122,8 +144,8 @@ class StafflineSegmentationModel:
     def predict_full(
         self,
         img_bgr: np.ndarray,
-        overlap: int = 64,
-        max_side: Optional[int] = 2048,
+        overlap: int = DEFAULT_OVERLAP,
+        max_side: Optional[int] = DEFAULT_MAX_SIDE,
     ) -> np.ndarray:
         """Tile-and-stitch inference on a full-resolution image.
         Args:
@@ -150,7 +172,7 @@ class StafflineSegmentationModel:
     def extract_staff_lines(
         self,
         prob_map: np.ndarray,
-        conf_thresh: float = 0.3,
+        conf_thresh: float = STAFF_CONF_THRESH,
         smooth_sigma: float = 2.0,
         peak_thresh: float = 0.5,
     ) -> List[List[int]]:
@@ -173,7 +195,7 @@ class DetailedSemanticModel:
     Each (288×288) BGR patch is classified at the pixel level into four
     classes: background (0), notehead (1), stem/beam (2), other symbol (3).
     """
-    PATCH_SIZE: int = 288
+    PATCH_SIZE: int = SEMANTIC_PATCH_SIZE
     NOTEHEAD_CHANNEL: int = _M2_CH_NOTEHEAD
     STEM_CHANNEL: int = _M2_CH_STEM
     SYMBOL_CHANNEL: int = _M2_CH_SYMBOL
@@ -183,6 +205,7 @@ class DetailedSemanticModel:
         self._session = ort.InferenceSession(model_path)
         self._in_name = self._session.get_inputs()[0].name
         self._out_name = self._session.get_outputs()[0].name
+        logger.info("Loaded semantic model: %s", model_path)
     def predict_patch(self, patch: np.ndarray) -> np.ndarray:
         """Run inference on a single (288, 288, 3) uint8 BGR patch.
         Returns:
@@ -193,8 +216,8 @@ class DetailedSemanticModel:
     def predict_full(
         self,
         img_bgr: np.ndarray,
-        overlap: int = 64,
-        max_side: Optional[int] = 2048,
+        overlap: int = DEFAULT_OVERLAP,
+        max_side: Optional[int] = DEFAULT_MAX_SIDE,
     ) -> np.ndarray:
         """Tile-and-stitch inference on a full-resolution image.
         Args:
@@ -216,11 +239,11 @@ class DetailedSemanticModel:
         if scale != 1.0:
             prob = cv2.resize(prob, (w_orig, h_orig), interpolation=cv2.INTER_LINEAR)
         return prob
-    
+
     def extract_noteheads(
         self,
         prob_map: np.ndarray,
-        conf_thresh: float = 0.4,
+        conf_thresh: float = NOTE_CONF_THRESH,
         min_area: int = 12,
         max_area: int = 2000,
         aspect_ratio: Tuple[float, float] = (0.35, 2.0),
@@ -253,7 +276,7 @@ class DetailedSemanticModel:
     def extract_symbol_mask(
         self,
         prob_map: np.ndarray,
-        conf_thresh: float = 0.35,
+        conf_thresh: float = SYMBOL_CONF_THRESH,
     ) -> np.ndarray:
 
         non_bg = prob_map[:, :, 1:].max(axis=2)
@@ -265,27 +288,36 @@ def run_dual_pipeline(
     img_bgr: np.ndarray,
     staffline_model: Optional[StafflineSegmentationModel] = None,
     semantic_model: Optional[DetailedSemanticModel] = None,
-    staff_conf_thresh: float = 0.3,
-    note_conf_thresh: float = 0.4,
-    overlap: int = 64,
-    max_side: Optional[int] = 2048,
+    staff_conf_thresh: float = STAFF_CONF_THRESH,
+    note_conf_thresh: float = NOTE_CONF_THRESH,
+    overlap: int = DEFAULT_OVERLAP,
+    max_side: Optional[int] = DEFAULT_MAX_SIDE,
 ) -> dict:
+    """Run the dual-stream pipeline and return a results dict.
 
+    Prefer :func:`orm.ete.run` for the full pipeline with logging and
+    visualisation.  This function is kept for programmatic use and
+    backwards-compatibility.
+    """
     if staffline_model is None:
         staffline_model = StafflineSegmentationModel()
     if semantic_model is None:
         semantic_model = DetailedSemanticModel()
     # --- Stream 1: Staffline Segmentation ---
+    logger.info("Stream 1: staffline segmentation")
     staff_prob_map = staffline_model.predict_full(img_bgr, overlap=overlap, max_side=max_side)
     staff_lines = staffline_model.extract_staff_lines(
         staff_prob_map, conf_thresh=staff_conf_thresh
     )
+    logger.info("Found %d staff system(s)", len(staff_lines))
     # --- Stream 2: Detailed Semantic Segmentation ---
+    logger.info("Stream 2: semantic segmentation")
     semantic_map = semantic_model.predict_full(img_bgr, overlap=overlap, max_side=max_side)
     noteheads = semantic_model.extract_noteheads(
         semantic_map, conf_thresh=note_conf_thresh
     )
     symbol_mask = semantic_model.extract_symbol_mask(semantic_map)
+    logger.info("Found %d notehead(s)", len(noteheads))
     return {
         "staff_lines": staff_lines,
         "noteheads": noteheads,

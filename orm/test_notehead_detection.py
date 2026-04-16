@@ -1,21 +1,24 @@
 import os
+import sys
 import cv2
 import numpy as np
 
-from preprocess import (
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from orm.preprocess import (
     preprocess_image,
     adaptive_binarize,
     remove_noise,
     sharpen,
     enhance_contrast,
 )
-from staff_detection import(
+from orm.staff_detection import (
     detect_and_refine_staff_lines,
 )
-from staff_removal import(
+from orm.staff_removal import (
     staff_removal_pipeline,
 )
-from notehead_detection import (
+from orm.notehead_detection import (
     notehead_detection_pipeline,
 )
 

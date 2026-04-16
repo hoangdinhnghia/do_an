@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from typing import List, Optional, Tuple
-from bbox import merge_nearby_bbox, rm_merge_overlap_bbox
+from .bbox import merge_nearby_bbox, rm_merge_overlap_bbox
 
 # Định nghĩa NoteheadBBox: (x, y, w, h, cx, cy)
 NoteheadBBox = Tuple[int, int, int, int, int, int]
