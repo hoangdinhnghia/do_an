@@ -45,6 +45,7 @@ from orm.constant import (
     DEFAULT_OVERLAP,
     NOTE_CONF_THRESH,
     STAFF_CONF_THRESH,
+    SYMBOL_CONF_THRESH,
 )
 from orm.exceptions import ImageLoadError
 from orm.inference import StafflineModel, SemanticModel, run_inference
@@ -214,7 +215,7 @@ def _save_outputs(
 
     # 3. Symbol mask (all non-background from stream 2)
     non_bg = semantic_prob[:, :, 1:].max(axis=2)
-    sym_mask = (non_bg >= 0.35).astype(np.uint8) * 255
+    sym_mask = (non_bg >= SYMBOL_CONF_THRESH).astype(np.uint8) * 255
     p = str(out_dir / f"{base}_symbol_mask.png")
     cv2.imwrite(p, sym_mask)
     logger.info("✔ %s", p)

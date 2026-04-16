@@ -43,13 +43,11 @@ def get_logger(name, level="warn"):
     handler = logging.StreamHandler()
     handler.setFormatter(formatter)
     if len(logger.handlers) > 0:
-        rm_idx = [
-            idx
-            for idx, h in enumerate(logger.handlers)
-            if isinstance(h, logging.StreamHandler)
+        handlers_to_remove = [
+            h for h in logger.handlers if isinstance(h, logging.StreamHandler)
         ]
-        for idx in rm_idx:
-            del logger.handlers[idx]
+        for h in handlers_to_remove:
+            logger.removeHandler(h)
     logger.addHandler(handler)
     logger.setLevel(level_mapping[level.lower()])
     return logger

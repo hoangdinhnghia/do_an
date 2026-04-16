@@ -12,8 +12,10 @@ Example
 >>> layers.register_layer("original_image", img_bgr)
 >>> img = layers.get_layer("original_image")
 """
+import logging
 from typing import Any, List
 
+_logger = logging.getLogger(__name__)
 
 _layers: dict = {}
 _access_count: dict = {}
@@ -22,11 +24,14 @@ _access_count: dict = {}
 def register_layer(name: str, data: Any) -> None:
     """Register *data* under *name*.
 
-    Raises a warning and returns early if the name is already taken.
+    Logs a warning and returns early if the name is already taken.
     Call :func:`delete_layer` first if you need to overwrite an entry.
     """
     if name in _layers:
-        print(f"[layers] Name '{name}' already registered! Delete it first or use a different name.")
+        _logger.warning(
+            "Layer '%s' is already registered. Delete it first or use a different name.",
+            name,
+        )
         return
     _layers[name] = data
     _access_count[name] = 0

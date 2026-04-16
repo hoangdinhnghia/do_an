@@ -1,8 +1,9 @@
 """Dual-stream OMR pipeline using two ONNX models.
 
-.. deprecated::
+.. deprecated:: 2026-04
     Prefer :mod:`orm.inference` for the model wrappers and :mod:`orm.ete` for
-    the end-to-end pipeline.  This module is kept for backwards compatibility.
+    the end-to-end pipeline.  This module is kept for backwards compatibility
+    and may be removed in a future release.
 
 Stream 1 — Staffline Segmentation Model (unet_big / 1st_model.onnx)
     Input : (N, 256, 256, 3) uint8 BGR patches
