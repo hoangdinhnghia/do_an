@@ -240,7 +240,8 @@ class TestIntegrationFullPipeline:
         pkl = tmp_path / f"{real_image_path.stem}.pkl"
         assert pkl.exists(), f"Cache file not found: {pkl}"
         # Verify it can be loaded back
-        cache = pickle.load(open(pkl, "rb"))
+        with open(pkl, "rb") as f:
+            cache = pickle.load(f)
         assert "staff_prob" in cache
         assert "semantic_prob" in cache
 

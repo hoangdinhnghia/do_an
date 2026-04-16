@@ -31,6 +31,7 @@ from typing import Callable, List, Optional, Tuple
 import cv2
 import numpy as np
 import onnxruntime as ort
+from .exceptions import ModelNotFoundError
 from .staff_detection import find_peaks_profile, group_peaks_to_staffs, refine_staff_lines
 from .constant import (
     M1_CH_STAFF,
@@ -131,6 +132,11 @@ class StafflineSegmentationModel:
     def __init__(self, model_path: Optional[str] = None) -> None:
         if model_path is None:
             model_path = os.path.join(_CHECKPOINT_DIR, "unet_big", "1st_model.onnx")
+        if not os.path.exists(model_path):
+            raise ModelNotFoundError(
+                f"Staffline model not found: {model_path}\n"
+                "Download checkpoints and place '1st_model.onnx' in orm/checkpoints/unet_big/"
+            )
         self._session = ort.InferenceSession(model_path)
         self._in_name = self._session.get_inputs()[0].name
         self._out_name = self._session.get_outputs()[0].name
@@ -203,6 +209,11 @@ class DetailedSemanticModel:
     def __init__(self, model_path: Optional[str] = None) -> None:
         if model_path is None:
             model_path = os.path.join(_CHECKPOINT_DIR, "seg_net", "2nd_model.onnx")
+        if not os.path.exists(model_path):
+            raise ModelNotFoundError(
+                f"Semantic model not found: {model_path}\n"
+                "Download checkpoints and place '2nd_model.onnx' in orm/checkpoints/seg_net/"
+            )
         self._session = ort.InferenceSession(model_path)
         self._in_name = self._session.get_inputs()[0].name
         self._out_name = self._session.get_outputs()[0].name

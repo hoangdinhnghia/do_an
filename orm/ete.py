@@ -130,7 +130,8 @@ def extract(args: Namespace) -> str:
     pkl_path = img_path.parent / f"{base}.pkl"
     if pkl_path.exists():
         logger.info("Loading cached predictions from %s", pkl_path)
-        cache = pickle.load(open(pkl_path, "rb"))
+        with open(pkl_path, "rb") as f:
+            cache = pickle.load(f)
         staff_prob = cache["staff_prob"]
         semantic_prob = cache["semantic_prob"]
         layers.register_layer("staff_prob_map", staff_prob)
@@ -154,10 +155,11 @@ def extract(args: Namespace) -> str:
         logger.info("Inference complete (%.1fs)", time.time() - t1)
 
         if args.save_cache:
-            pickle.dump(
-                {"staff_prob": staff_prob, "semantic_prob": semantic_prob},
-                open(pkl_path, "wb"),
-            )
+            with open(pkl_path, "wb") as f:
+                pickle.dump(
+                    {"staff_prob": staff_prob, "semantic_prob": semantic_prob},
+                    f,
+                )
             logger.info("Predictions cached to %s", pkl_path)
 
     # ---- 3. Extract staff lines ---- #

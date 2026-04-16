@@ -55,7 +55,7 @@ def group_peaks_to_staffs(
             median_gap = float(np.median(np.diff(cur)))
             if median_gap <= 0:
                 cur.append(y)
-            if len(cur) < 5:
+            elif len(cur) < 5:
                 # Dùng ngưỡng rộng hơn khi chưa đủ 5 dòng để thiết lập spacing,
                 # nhưng vẫn từ chối gap quá lớn (>2.5x expected) để tránh gộp
                 # nhầm dòng đầu tiên của staff kế vào nhóm hiện tại.
