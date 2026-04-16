@@ -34,8 +34,8 @@ Two U-Net variants are provided:
 
     Output softmax classes:
         0 = background
-        1 = notehead
-        2 = stem / beam
+        1 = stem / beam
+        2 = notehead
         3 = other symbol (clef, accidental, rest, …)
 
     Compiled ONNX checkpoint:  ``orm/checkpoints/seg_net/2nd_model.onnx``

@@ -3,12 +3,11 @@
 Orchestrates the full recognition flow using the dual U-Net stream approach
 inspired by the oemer project (https://github.com/BreezeWhite/oemer):
 
-    1. Pre-process      — grayscale, adaptive binarise.
-    2. Stream 1 (U-Net) — staffline segmentation → staff system y-coordinates.
-    3. Stream 2 (U-Net) — detailed semantic segmentation → symbol probability map.
-    4. Staff removal    — erase staff lines from the binary image.
-    5. Notehead detect  — detect noteheads using the symbol mask + contour analysis.
-    6. Pitch assign     — map each notehead to a pitch using staff geometry.
+    1. Stream 1 (U-Net) — staffline segmentation → staff system y-coordinates.
+    2. Stream 2 (U-Net) — detailed semantic segmentation → notehead detections.
+    3. Assign noteheads to staves — map each notehead to its nearest staff using
+       the staff y-coordinates from stream 1.
+    4. Pitch assign — map each notehead to a pitch using staff geometry.
 
 Usage
 -----
@@ -41,7 +40,7 @@ Per-staff dict keys
 
 Per-note dict keys
 ------------------
-    'notehead'  : (x, y, w, h, cx, cy) in crop coordinates.
+    'notehead'  : (x, y, w, h, cx, cy) in global image coordinates.
     'pitch'     : str   — e.g. "E4"
     'step'      : str   — note letter, e.g. "E"
     'octave'    : int   — octave number
@@ -51,9 +50,8 @@ Per-note dict keys
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Tuple
 
-import cv2
 import numpy as np
 
 from .model_inference import (
@@ -61,11 +59,8 @@ from .model_inference import (
     StafflineSegmentationModel,
     run_dual_pipeline,
 )
-from .notehead_detection import detect_notehead_contour
 from .pitch import Clef, assign_pitches_to_staff
-from .preprocess import adaptive_binarize, preprocess_image
 from .staff_detection import crop_staffs
-from .staff_removal import staff_removal_pipeline
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +71,52 @@ _DEFAULT_STAFF_THRESH = 0.30
 _DEFAULT_NOTE_THRESH = 0.40
 _DEFAULT_OVERLAP = 64
 _DEFAULT_MAX_SIDE = 2048
+
+# Half-height of a staff system (in units of median inter-line spacing) used
+# when deciding which staff "owns" a notehead that falls between two staves.
+_STAFF_OWNERSHIP_HALF_SPAN = 4.0
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _assign_noteheads_to_staves(
+    noteheads: List[Tuple[int, int, int, int, int, int]],
+    staff_lines: List[List[int]],
+) -> List[List[Tuple[int, int, int, int, int, int]]]:
+    """Assign each global notehead to its nearest staff.
+
+    For each notehead centroid cy we compute the vertical distance to the
+    centre of every staff and assign the notehead to the closest one.  A note
+    falls outside the staff "bounding box" if its cy is far enough from the
+    staff centre; in that case it is still assigned to the nearest staff,
+    which lets the pitch module handle ledger lines correctly.
+
+    Args:
+        noteheads   : List of (x, y, w, h, cx, cy) in image coordinates.
+        staff_lines : List of staves; each staff is a list of 5 y-coords.
+
+    Returns:
+        List of the same length as *staff_lines*, where each element is the
+        sub-list of noteheads assigned to that staff.
+    """
+    per_staff: List[List[Tuple[int, int, int, int, int, int]]] = [
+        [] for _ in staff_lines
+    ]
+    if not staff_lines or not noteheads:
+        return per_staff
+
+    staff_centers = [float(sum(s)) / len(s) for s in staff_lines]
+
+    for nh in noteheads:
+        cy = nh[5]
+        best_idx = int(
+            min(range(len(staff_centers)), key=lambda i: abs(staff_centers[i] - cy))
+        )
+        per_staff[best_idx].append(nh)
+
+    return per_staff
+
 
 # ---------------------------------------------------------------------------
 # OMRPipeline
@@ -90,14 +131,14 @@ class OMRPipeline:
         semantic_model:  Pre-loaded :class:`~orm.model_inference.DetailedSemanticModel`.
             Created automatically on first use if *None*.
         staff_conf_thresh: Confidence threshold for stream-1 staff-line pixels.
-        note_conf_thresh:  Confidence threshold for stream-2 notehead pixels.
+        note_conf_thresh:  Confidence threshold for stream-2 notehead pixels
+                           (applied to the notehead channel of the semantic map).
         overlap: Tile-and-stitch overlap in pixels used by both models.
         max_side: Maximum image side length before auto-downscaling.
         default_clef: Clef assumed for every staff when no clef detector is
             available.  One of ``"treble"``, ``"bass"``, ``"alto"``, ``"tenor"``.
-        notehead_min_area: Minimum contour area for notehead candidates.
-        notehead_max_area: Maximum contour area for notehead candidates.
-        staff_expand: Pixels to expand each side when cropping staff regions.
+        staff_expand: Pixels to expand each side when cropping staff regions for
+            the per-staff image in the result dict.
     """
 
     def __init__(
@@ -110,8 +151,6 @@ class OMRPipeline:
         overlap: int = _DEFAULT_OVERLAP,
         max_side: int = _DEFAULT_MAX_SIDE,
         default_clef: Clef = "treble",
-        notehead_min_area: int = 18,
-        notehead_max_area: int = 1200,
         staff_expand: int = 20,
     ) -> None:
         self._staffline_model = staffline_model
@@ -121,8 +160,6 @@ class OMRPipeline:
         self.overlap = overlap
         self.max_side = max_side
         self.default_clef = default_clef
-        self.notehead_min_area = notehead_min_area
-        self.notehead_max_area = notehead_max_area
         self.staff_expand = staff_expand
 
     # ------------------------------------------------------------------
@@ -164,7 +201,7 @@ class OMRPipeline:
             raise ValueError("img_bgr is empty")
 
         # ----------------------------------------------------------------
-        # Step 1 & 2: Dual U-Net inference
+        # Step 1 & 2: Dual U-Net inference (staffline + semantic)
         # ----------------------------------------------------------------
         log.debug("Running dual U-Net inference…")
         dual = run_dual_pipeline(
@@ -178,41 +215,22 @@ class OMRPipeline:
         )
 
         staff_lines: List[List[int]] = dual["staff_lines"]
+        noteheads_global = dual["noteheads"]           # from stream-2, notehead channel
         staff_prob_map: np.ndarray = dual["staff_prob_map"]
         semantic_map: np.ndarray = dual["semantic_map"]
         symbol_mask: np.ndarray = dual["symbol_mask"]
 
-        log.debug("Found %d staff system(s).", len(staff_lines))
+        log.debug("Found %d staff system(s), %d notehead(s).",
+                  len(staff_lines), len(noteheads_global))
 
         if not staff_lines:
             log.warning("No staff systems detected — returning empty result.")
             return self._empty_result(staff_prob_map, semantic_map, symbol_mask)
 
         # ----------------------------------------------------------------
-        # Step 3: Binarise original image for staff removal & notehead detect
+        # Step 3: Assign noteheads to staves (by y-proximity)
         # ----------------------------------------------------------------
-        gray_norm = preprocess_image(img_bgr)             # float32 [0,1]
-        img_bin = adaptive_binarize(gray_norm).astype(np.uint8)  # 0/1 uint8
-
-        # ----------------------------------------------------------------
-        # Step 4: Staff removal
-        # ----------------------------------------------------------------
-        log.debug("Removing staff lines…")
-        img_no_staff = staff_removal_pipeline(img_bin, staff_lines)
-
-        # ----------------------------------------------------------------
-        # Step 5: Notehead detection per staff using symbol mask guidance
-        # ----------------------------------------------------------------
-        # Use the U-Net symbol_mask (from stream 2) as the primary input
-        # for notehead detection — it's cleaner than the raw binary image.
-        # Fall back to img_no_staff when the mask is empty.
-        if symbol_mask is not None and symbol_mask.max() > 0:
-            detect_src = symbol_mask
-        else:
-            detect_src = (img_no_staff * 255).astype(np.uint8)
-
-        crops = crop_staffs(img_bgr, staff_lines, expand=self.staff_expand)
-        crops_bin = crop_staffs(detect_src, staff_lines, expand=self.staff_expand)
+        per_staff_noteheads = _assign_noteheads_to_staves(noteheads_global, staff_lines)
 
         # Resolve clef list
         if clefs is None:
@@ -225,32 +243,17 @@ class OMRPipeline:
                 )
             clefs_resolved = list(clefs)
 
+        # Crop original image once per staff (for the result dict)
+        crops = crop_staffs(img_bgr, staff_lines, expand=self.staff_expand)
+
+        # ----------------------------------------------------------------
+        # Step 4: Pitch assignment per staff
+        # ----------------------------------------------------------------
         staves = []
-        all_noteheads_global: List = []
-
-        for idx, (staff_y, crop_bgr, crop_bin, clef) in enumerate(
-            zip(staff_lines, crops, crops_bin, clefs_resolved)
+        for idx, (staff_y, noteheads, crop_bgr, clef) in enumerate(
+            zip(staff_lines, per_staff_noteheads, crops, clefs_resolved)
         ):
-            noteheads_local = detect_notehead_contour(
-                crop_bin,
-                staff_y=None,   # crop already bounded to this staff
-                min_area=self.notehead_min_area,
-                max_area=self.notehead_max_area,
-            )
-
-            # ----------------------------------------------------------------
-            # Step 6: Pitch assignment
-            # ----------------------------------------------------------------
-            notes = assign_pitches_to_staff(noteheads_local, staff_y, clef=clef)
-
-            # Convert notehead coords back to global image space
-            top_y = max(0, min(staff_y) - self.staff_expand)
-            for note in notes:
-                nx, ny, nw, nh, ncx, ncy = note["notehead"]
-                all_noteheads_global.append(
-                    (nx, ny + top_y, nw, nh, ncx, ncy + top_y)
-                )
-
+            notes = assign_pitches_to_staff(noteheads, staff_y, clef=clef)
             staves.append({
                 "staff_index": idx,
                 "staff_y": staff_y,
@@ -262,7 +265,7 @@ class OMRPipeline:
         return {
             "staves": staves,
             "staff_lines": staff_lines,
-            "noteheads_global": all_noteheads_global,
+            "noteheads_global": noteheads_global,
             "staff_prob_map": staff_prob_map,
             "semantic_map": semantic_map,
             "symbol_mask": symbol_mask,

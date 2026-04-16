@@ -194,3 +194,59 @@ class TestOMRPipelineLazyLoading:
         )
         assert pipe.staffline_model is mock_staffline
         assert pipe.semantic_model is mock_semantic
+
+
+# ---------------------------------------------------------------------------
+# Tests for _assign_noteheads_to_staves
+# ---------------------------------------------------------------------------
+
+class TestAssignNoteheadsToStaves:
+    """Unit tests for the notehead→staff assignment helper."""
+
+    from orm.pipeline import _assign_noteheads_to_staves as _fn
+
+    def test_empty_noteheads(self):
+        from orm.pipeline import _assign_noteheads_to_staves
+        staffs = [[10, 20, 30, 40, 50], [100, 110, 120, 130, 140]]
+        result = _assign_noteheads_to_staves([], staffs)
+        assert result == [[], []]
+
+    def test_empty_staves(self):
+        from orm.pipeline import _assign_noteheads_to_staves
+        result = _assign_noteheads_to_staves([(0, 0, 5, 5, 2, 30)], [])
+        assert result == []
+
+    def test_single_staff_all_noteheads_assigned(self):
+        from orm.pipeline import _assign_noteheads_to_staves
+        staff = [10, 20, 30, 40, 50]
+        noteheads = [(0, 0, 5, 5, 2, 25), (10, 0, 5, 5, 12, 35)]
+        result = _assign_noteheads_to_staves(noteheads, [staff])
+        assert len(result) == 1
+        assert len(result[0]) == 2
+
+    def test_two_staves_noteheads_routed_by_proximity(self):
+        from orm.pipeline import _assign_noteheads_to_staves
+        # Staff 0 centred at y=30, staff 1 centred at y=130
+        staff0 = [10, 20, 30, 40, 50]    # center = 30
+        staff1 = [110, 120, 130, 140, 150]  # center = 130
+        nh_near_staff0 = (0, 0, 5, 5, 2, 25)   # cy=25 → closer to staff0
+        nh_near_staff1 = (0, 0, 5, 5, 2, 135)  # cy=135 → closer to staff1
+        result = _assign_noteheads_to_staves(
+            [nh_near_staff0, nh_near_staff1],
+            [staff0, staff1],
+        )
+        assert len(result[0]) == 1
+        assert len(result[1]) == 1
+        assert result[0][0][5] == 25
+        assert result[1][0][5] == 135
+
+    def test_ledger_note_assigned_to_nearest_staff(self):
+        from orm.pipeline import _assign_noteheads_to_staves
+        # A note above staff 0 (ledger line) should still go to staff 0
+        staff0 = [50, 60, 70, 80, 90]    # center = 70
+        staff1 = [200, 210, 220, 230, 240]  # center = 220
+        nh_ledger = (0, 0, 5, 5, 2, 30)  # cy=30, above staff0 but closer to it
+        result = _assign_noteheads_to_staves([nh_ledger], [staff0, staff1])
+        assert len(result[0]) == 1
+        assert len(result[1]) == 0
+

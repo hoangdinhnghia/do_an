@@ -25,8 +25,8 @@ Stream 2 — Detailed Semantic U-Net  (seg_net / 2nd_model.onnx)
     Input        : (N, 288, 288, 3) uint8 BGR patches
     Output       : (N, 288, 288, 4) float32 — softmax probabilities
                    channel 0 = background
-                   channel 1 = notehead
-                   channel 2 = stem / beam
+                   channel 1 = stem / beam
+                   channel 2 = notehead
                    channel 3 = other symbol (clef, accidental, rest…)
     Role         : Segment individual music symbols (noteheads, stems, etc.).
 
@@ -59,8 +59,8 @@ _M1_CH_STAFF = 1
 _M1_CH_SYMBOL = 2
 
 _M2_CH_BG = 0
-_M2_CH_NOTEHEAD = 1
-_M2_CH_STEM = 2
+_M2_CH_STEM = 1       # channel 1 = stem / beam
+_M2_CH_NOTEHEAD = 2   # channel 2 = notehead
 _M2_CH_SYMBOL = 3
 
 
@@ -243,7 +243,10 @@ class DetailedSemanticModel:
     """Wraps the Detailed Semantic ONNX model (seg_net / 2nd_model.onnx).
 
     Each (288×288) BGR patch is classified at the pixel level into four
-    classes: background (0), notehead (1), stem/beam (2), other symbol (3).
+    classes: background (0), stem/beam (1), notehead (2), other symbol (3).
+
+    Note on channel order: the ``conv2d_25`` ONNX output layer uses
+    channel 1 = stem/beam and channel 2 = notehead (verified empirically).
     """
 
     PATCH_SIZE: int = 288

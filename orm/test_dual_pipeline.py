@@ -105,7 +105,7 @@ cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_staff_prob.png", staff_heatmap)
 print(f"✔ {OUTPUT_DIR}/{base_name}_staff_prob.png")
 
 # 2. Notehead probability heatmap (channel 1 of stream 2)
-note_heatmap = _prob_to_heatmap(sem_map[:, :, 1])
+note_heatmap = _prob_to_heatmap(sem_map[:, :, 2])
 cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_notehead_prob.png", note_heatmap)
 print(f"✔ {OUTPUT_DIR}/{base_name}_notehead_prob.png")
 
