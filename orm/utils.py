@@ -1,13 +1,28 @@
-from typing import Tuple
-import os
-import logging
-from .staff_detection import Staff
+from collections.abc import Sequence
+from typing import Protocol, Tuple
 
 import cv2
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-from . import layers
+
+class StaffLike(Protocol):
+    y_lower: float
+    y_upper: float
+    y_center: float
+    unit_size: float
+    track: int
+
+
+def _require_staffs(staffs: Sequence[StaffLike] | None) -> list[StaffLike]:
+    if staffs is None:
+        raise ValueError("staffs is required; this module no longer uses a global layers registry")
+    return list(staffs)
+
+
+def _staff_distance(staff: StaffLike, y: float) -> float:
+    return abs(float(staff.y_center) - y)
+
 
 
 #Liệt kê số lượng phần tử của một mảng số data rơi vào từng khoảng do intervals cho trước.
@@ -23,41 +38,23 @@ def count(data, intervals):
     return occur
 
 
-def find_closest_staffs(x: int, y: int) -> Tuple[Staff, Staff]:
-    staffs = layers.get_layer('staffs')
+def find_closest_staffs(x: int, y: int, staffs: Sequence[StaffLike] | None = None) -> Tuple[StaffLike, StaffLike]:
+    staff_list = _require_staffs(staffs)
+    if not staff_list:
+        raise ValueError("staffs must not be empty")
 
-    staffs = staffs.reshape(-1, 1).squeeze()
-    diffs = sorted(staffs, key=lambda st: st - [x, y])
-    if len(diffs) == 1:
-        return diffs[0], diffs[0]
-    elif len(diffs) == 2:
-        return (diffs[0], diffs[1])
+    # x is kept for API compatibility; vertical proximity decides the nearest staffs.
+    del x
 
-    # There are over three candidates
-    first = diffs[0]
-    second = diffs[1]
-    third = diffs[2]
-    if abs(first.y_lower - y) <= abs(first.y_upper - y):
-        # Closer to the lower bound of the first candidate.
-        if second.y_center > first.y_center:
-            return first, second
-        elif third.y_center > first.y_center:
-            return first, third
-        else:
-            return first, first
-    else:
-        # Closer to the upper bound of the first candidate.
-        if second.y_center < first.y_center:
-            return first, second
-        elif third.y_center < first.y_center:
-            return first, third
-        else:
-            return first, first
+    ordered = sorted(staff_list, key=lambda st: _staff_distance(st, float(y)))
+    if len(ordered) == 1:
+        return ordered[0], ordered[0]
+    return ordered[0], ordered[1]
    
    
 ##Xác định "unit size" tại một điểm bất kỳ (dựa vào vị trí so với các staff lines gần nhất).     
-def get_unit_size(x: int, y: int) -> float:
-    st1, st2 = find_closest_staffs(x, y)
+def get_unit_size(x: int, y: int, staffs: Sequence[StaffLike] | None = None) -> float:
+    st1, st2 = find_closest_staffs(x, y, staffs=staffs)
     if st1.y_center == st2.y_center:
         return float(st1.unit_size)
 
@@ -69,24 +66,27 @@ def get_unit_size(x: int, y: int) -> float:
     # Infer the unit size by linear interpolation.
     dist1 = abs(y - st1.y_center)
     dist2 = abs(y - st2.y_center)
+    if dist1 + dist2 == 0:
+        return float(st1.unit_size)
     w1 = dist1 / (dist1 + dist2)
     w2 = dist2 / (dist1 + dist2)
     unit_size = w1 * st1.unit_size + w2 * st2.unit_size
     return float(unit_size)
 
 # trung bình cộng của tất cả unit size của các staff
-def get_global_unit_size() -> float:
-    staffs = layers.get_layer('staffs')
-    usize = []
-    for st in staffs.reshape(-1, 1).squeeze():
-        usize.append(st.unit_size)
-    return sum(usize) / len(usize)
+def get_global_unit_size(staffs: Sequence[StaffLike] | None = None) -> float:
+    staff_list = _require_staffs(staffs)
+    if not staff_list:
+        raise ValueError("staffs must not be empty")
+    return float(sum(st.unit_size for st in staff_list) / len(staff_list))
 
 
 # Đếm số lượng track (dựa vào trường track của staff). Nếu có 5 staff thì có thể có 5 track, nhưng nếu có 10 staff thì có thể chỉ có 5 track (vì mỗi track có thể có nhiều staff).
-def get_total_track_nums() -> int:
-    staffs = layers.get_layer('staffs')
-    tracks = [st.track for st in staffs.reshape(-1, 1).squeeze()]
+def get_total_track_nums(staffs: Sequence[StaffLike] | None = None) -> int:
+    staff_list = _require_staffs(staffs)
+    if not staff_list:
+        raise ValueError("staffs must not be empty")
+    tracks = [st.track for st in staff_list]
     return len(set(tracks))
 
 

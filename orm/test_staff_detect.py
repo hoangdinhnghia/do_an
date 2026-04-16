@@ -76,7 +76,7 @@ def process_one_image(img: np.ndarray):
     img_vis = img.copy()
     for staff in staff_lines:
         for y in staff:
-            cv2.line(img_vis, (0, y), (img_vis.shape[1], y), (0, 0, 255), 1)
+            cv2.line(img_vis, (0, y), (img_vis.shape[1], y), (0, 0, 255), 2)
 
     # ==== VISUALIZE GRAND STAFF ====
     img_grand = img.copy()
@@ -131,7 +131,7 @@ def process_one_image(img: np.ndarray):
 
 # ========================= MAIN =========================
 
-INPUT_PATH = 'img_test/test0.png'
+INPUT_PATH = 'img_test/test8.png'
 os.makedirs('out', exist_ok=True)
 
 ext = os.path.splitext(INPUT_PATH)[1].lower()
@@ -168,19 +168,9 @@ else:
     # ===== staff detect =====
     cv2.imwrite(f'out_staff_detect/{base_name}_staff_detected.png', img_vis)
 
-    # ===== từng staff =====
-    for idx, crop in enumerate(crops):
-        out_crop = f'out_staff_detect/{base_name}_staff_{idx+1}.png'
-        cv2.imwrite(out_crop, crop)
-        print(f'✔ {out_crop} | shape={crop.shape}')
-
     # ===== grand staff =====
     cv2.imwrite(f'out/{base_name}_grand_staff.png', img_grand)
 
-    for idx, crop in enumerate(grand_crops):
-        out_crop = f'out/{base_name}_grand_{idx+1}.png'
-        cv2.imwrite(out_crop, crop)
-        print(f'✔ {out_crop} | shape={crop.shape}')
     
      # ===== ảnh đã xóa dòng kẻ =====
     cv2.imwrite(f'out_no_staff/{base_name}_no_staff.png', img_no_staff)

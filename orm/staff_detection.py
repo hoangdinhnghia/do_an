@@ -61,14 +61,10 @@ def group_peaks_to_staffs(
                 # nhầm dòng đầu tiên của staff kế vào nhóm hiện tại.
                 if gap <= median_gap * 2.5:
                     cur.append(y)
-                cur = [y]
             else:
-                if abs(gap - median_gap) < spacing_tol * median_gap:
-                    cur.append(y)
-                else:
-                    if len(cur) >= 3:
-                        staffs.append(cur)
-                    cur = [y]
+                if len(cur) >= 3:
+                    staffs.append(cur)
+                cur = [y]
     if len(cur) >= 3:
         staffs.append(cur)
     # Fix mỗi staff đủ 5 dòng
