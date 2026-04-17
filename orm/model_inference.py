@@ -1,30 +1,10 @@
-"""Dual-stream OMR pipeline using two ONNX models.
-Stream 1 — Staffline Segmentation Model (unet_big / 1st_model.onnx)
-    Input : (N, 256, 256, 3) uint8 BGR patches
-    Output: (N, 256, 256, 3) float32 — softmax probabilities
-            channel 0 = background
-            channel 1 = staff line
-            channel 2 = music symbol
-    Role  : Locate the five staff lines of every staff system.
-Stream 2 — Detailed Semantic Model (seg_net / 2nd_model.onnx)
-    Input : (N, 288, 288, 3) uint8 BGR patches
-    Output: (N, 288, 288, 4) float32 — softmax probabilities
-            channel 0 = background
-            channel 1 = notehead
-            channel 2 = stem / beam
-            channel 3 = other symbol (clef, accidental, rest…)
-    Role  : Segment individual music symbols (noteheads, stems, etc.).
-Public API
-----------
-    StafflineSegmentationModel  — wraps stream 1
-    DetailedSemanticModel       — wraps stream 2
-    run_dual_pipeline()         — full end-to-end dual-stream function
-"""
+
 import os
 from typing import Callable, List, Optional, Tuple
 import cv2
 import numpy as np
 import onnxruntime as ort
+from .notehead_detection import extract_noteheads_from_prob_map
 from .staff_detection import find_peaks_profile, group_peaks_to_staffs, refine_staff_lines
 # ---------------------------------------------------------------------------
 # Checkpoint paths
@@ -37,8 +17,8 @@ _M1_CH_BG = 0
 _M1_CH_STAFF = 1
 _M1_CH_SYMBOL = 2
 _M2_CH_BG = 0
-_M2_CH_NOTEHEAD = 1
 _M2_CH_STEM = 2
+_M2_CH_NOTEHEAD = 1
 _M2_CH_SYMBOL = 3
 # ---------------------------------------------------------------------------
 # Tile-and-stitch helper
@@ -53,18 +33,7 @@ def _tile_and_stitch(
     overlap: int,
     predict_fn: Callable[[np.ndarray], np.ndarray],
 ) -> np.ndarray:
-    """Tile a full image into overlapping patches, run *predict_fn* on each,
-    and stitch the results back with Hann-window blending.
-    Args:
-        img_bgr   : Input image (H, W, 3) uint8.
-        patch_size: Square patch side length expected by the model.
-        overlap   : Overlap between adjacent patches (pixels). Must be < patch_size.
-        predict_fn: Callable that takes a (patch_size, patch_size, 3) uint8 array
-                    and returns a (patch_size, patch_size, C) float32 probability map.
-    Returns:
-        Stitched probability map (H_orig, W_orig, C) float32 in the same spatial
-        resolution as *img_bgr*.
-    """
+
     if overlap >= patch_size:
         raise ValueError("overlap must be smaller than patch_size")
     h_orig, w_orig = img_bgr.shape[:2]
@@ -226,30 +195,14 @@ class DetailedSemanticModel:
         aspect_ratio: Tuple[float, float] = (0.35, 2.0),
     ) -> List[Tuple[int, int, int, int, int, int]]:
 
-        mask = (
-            prob_map[:, :, self.NOTEHEAD_CHANNEL] >= conf_thresh
-        ).astype(np.uint8) * 255
-        # Close small intra-blob gaps
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        results: List[Tuple[int, int, int, int, int, int]] = []
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < min_area or area > max_area:
-                continue
-            x, y, w, h = cv2.boundingRect(c)
-            ar = (w / h) if h else 0.0
-            if ar < aspect_ratio[0] or ar > aspect_ratio[1]:
-                continue
-            perimeter = cv2.arcLength(c, True)
-            if perimeter <= 0:
-                continue
-            circularity = 4.0 * np.pi * area / (perimeter * perimeter)
-            if circularity < 0.15:
-                continue
-            results.append((x, y, w, h, x + w // 2, y + h // 2))
-        return results
+        return extract_noteheads_from_prob_map(
+                prob_map,
+                notehead_channel=self.NOTEHEAD_CHANNEL,
+                conf_thresh=conf_thresh,
+                min_area=min_area,
+                max_area=max_area,
+                aspect_ratio=aspect_ratio,
+            )
     def extract_symbol_mask(
         self,
         prob_map: np.ndarray,

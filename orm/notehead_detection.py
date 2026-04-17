@@ -1,17 +1,24 @@
+from __future__ import annotations
+
+from typing import List, Optional, Tuple
+
 import cv2
 import numpy as np
-from typing import List, Optional, Tuple
-from bbox import merge_nearby_bbox, rm_merge_overlap_bbox
 
-# Định nghĩa NoteheadBBox: (x, y, w, h, cx, cy)
+try:
+    from .bbox import merge_nearby_bbox, rm_merge_overlap_bbox
+except ImportError:
+    from bbox import merge_nearby_bbox, rm_merge_overlap_bbox
+
+
+# NoteheadBBox: (x, y, w, h, cx, cy)
 NoteheadBBox = Tuple[int, int, int, int, int, int]
-
-#kết quả trả về của staff detect sẽ là:
-NoteheadStaffResult = Tuple[int, List[int], List[NoteheadBBox], np.ndarray]  # (staff_index, staff_y, list notehead box, annotated_crop)
+# Per-staff result: (staff_index, staff_y_lines, notehead_boxes, annotated_crop)
+NoteheadStaffResult = Tuple[int, List[int], List[NoteheadBBox], np.ndarray]
 
 
 def _to_binary_foreground(gray: np.ndarray) -> np.ndarray:
-    """Convert input to clean binary map where foreground symbols are 255."""
+    """Convert input to a binary map where foreground symbols are 255."""
     if gray.max() <= 1.0:
         gray_u8 = (gray * 255).astype(np.uint8)
     else:
@@ -22,11 +29,10 @@ def _to_binary_foreground(gray: np.ndarray) -> np.ndarray:
         bin_map = (gray_u8 > 0).astype(np.uint8) * 255
     else:
         _, bw = cv2.threshold(gray_u8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        # Symbols occupy less pixels than background, keep sparse class as foreground.
         white_ratio = float(np.count_nonzero(bw)) / float(bw.size)
+        # Keep sparse class as foreground when background dominates.
         bin_map = bw if white_ratio < 0.5 else (255 - bw)
 
-    # Bridge small gaps inside noteheads while preserving thin components.
     close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     bin_map = cv2.morphologyEx(bin_map, cv2.MORPH_CLOSE, close_kernel)
     return bin_map
@@ -77,11 +83,15 @@ def _crop_staffs_with_bounds(
 
 
 def _deduplicate_noteheads(noteheads: List[NoteheadBBox], iou_thr: float = 0.4) -> List[NoteheadBBox]:
-    """Post-process notehead boxes using bbox utilities, then IoU dedup fallback."""
+    """Merge/remove overlapping notehead boxes with bbox utilities and IoU fallback."""
     if not noteheads:
         return []
 
-    def _merge_close_boxes(box_list: List[Tuple[int, int, int, int]], gap_limit: int, overlap_limit: float) -> List[Tuple[int, int, int, int]]:
+    def _merge_close_boxes(
+        box_list: List[Tuple[int, int, int, int]],
+        gap_limit: int,
+        overlap_limit: float,
+    ) -> List[Tuple[int, int, int, int]]:
         if not box_list:
             return []
 
@@ -112,8 +122,6 @@ def _deduplicate_noteheads(noteheads: List[NoteheadBBox], iou_thr: float = 0.4) 
             merged = next_boxes
         return merged
 
-    # 1) Use bbox utilities to merge close boxes and handle heavy overlap.
-    # Convert (x, y, w, h, cx, cy) -> (x1, y1, x2, y2)
     boxes = [(x, y, x + w, y + h) for (x, y, w, h, _, _) in noteheads]
     sizes = [max(1, min(w, h)) for (_, _, w, h, _, _) in noteheads]
     merge_dist = max(3, int(np.median(sizes) * 0.75))
@@ -122,10 +130,8 @@ def _deduplicate_noteheads(noteheads: List[NoteheadBBox], iou_thr: float = 0.4) 
         boxes = rm_merge_overlap_bbox(boxes, mode="merge", overlap_ratio=0.40)
         boxes = rm_merge_overlap_bbox(boxes, mode="remove", overlap_ratio=0.75)
     except Exception:
-        # Keep pipeline robust when bbox post-processing cannot be applied.
         pass
 
-    # 2) Merge small fragments that belong to the same notehead-like symbol.
     fragment_gap = max(3, int(round(np.median(sizes) * 1.25)))
     boxes = _merge_close_boxes(boxes, gap_limit=fragment_gap, overlap_limit=0.20)
 
@@ -185,7 +191,7 @@ def _longest_run_1d(values: np.ndarray) -> Tuple[int, int, int]:
 
 
 def _has_attached_stem(bin_img: np.ndarray, bbox: Tuple[int, int, int, int], unit: float) -> bool:
-    """Check whether a candidate notehead has a nearby vertical stem in the original binary image."""
+    """Check whether a candidate notehead has a nearby vertical stem in binary image."""
     x, y, w, h = bbox
     img_h, img_w = bin_img.shape[:2]
     search_margin = max(3, int(round(0.40 * unit)))
@@ -216,34 +222,23 @@ def _has_attached_stem(bin_img: np.ndarray, bbox: Tuple[int, int, int, int], uni
                 return True
     return False
 
+
 def detect_notehead_contour(
     staff_crop_img: np.ndarray,
     staff_y: Optional[List[int]] = None,
-    min_area: int = 18,
-    max_area: int = 1200,
-    aspect_ratio: Tuple[float, float] = (0.45, 1.8),
+    min_area: int = 12,
+    max_area: int = 2000,
+    aspect_ratio: Tuple[float, float] = (0.35, 2.0),
 ) -> List[NoteheadBBox]:
-    """
-    Detect noteheads from a cropped staff image with robust morphological and shape filtering.
-    Args:
-        staff_crop_img: Ảnh crop staff (grayscale, binary hoặc BGR)
-        staff_y: List 5 dòng staff (giúp lọc note ngoài staff)
-        min_area, max_area: Kích thước diện tích contour note hợp lệ
-        aspect_ratio: Tỉ lệ width/height chấp nhận của notehead
-    Returns:
-        List tuple (x, y, w, h, cx, cy) cho từng notehead phát hiện được
-    """
-    # 1. Chuyển về gray nếu là RGB
+    """Detect noteheads from a staff crop with morphology and shape filters."""
     if staff_crop_img.ndim == 3:
         gray = cv2.cvtColor(staff_crop_img, cv2.COLOR_BGR2GRAY)
     else:
         gray = staff_crop_img.copy()
 
-    # 2. Chuẩn hóa foreground=255 và ước lượng đơn vị khoảng cách dòng staff.
     note_img = _to_binary_foreground(gray)
     unit = _estimate_staff_unit(staff_y, crop_h=note_img.shape[0])
 
-    # 2.1. Trích blob gần kích thước notehead bằng opening ellipse để bỏ stem mảnh.
     core_size = max(3, int(round(0.34 * unit)))
     core_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (core_size, core_size))
     note_core = cv2.morphologyEx(note_img, cv2.MORPH_OPEN, core_kernel)
@@ -253,7 +248,6 @@ def detect_notehead_contour(
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
     )
 
-    # 3. Scale-invariant constraints by staff unit.
     min_area_eff = max(min_area, int(0.06 * unit * unit))
     max_area_eff = min(max_area, int(0.95 * unit * unit))
     min_w = max(2, int(round(0.22 * unit)))
@@ -277,7 +271,6 @@ def detect_notehead_contour(
         if ar < aspect_ratio[0] or ar > aspect_ratio[1]:
             continue
 
-        # Thêm lọc compactness/circularity loại bỏ clef, rest, ký hiệu phụ
         perimeter = cv2.arcLength(c, True)
         if perimeter <= 0:
             continue
@@ -285,18 +278,17 @@ def detect_notehead_contour(
         if circularity < 0.22:
             continue
 
-        solidity = area / float(cv2.contourArea(cv2.convexHull(c))) if cv2.contourArea(cv2.convexHull(c)) > 0 else 0.0
+        hull_area = cv2.contourArea(cv2.convexHull(c))
+        solidity = area / float(hull_area) if hull_area > 0 else 0.0
         extent = area / float(max(1, w * h))
         if solidity < 0.68 or extent < 0.32:
             continue
 
         cx, cy = x + w // 2, y + h // 2
 
-        # Loại vùng khóa nhạc / time signature ở mé trái, nơi thường sinh false positive.
         if x + w <= left_margin:
             continue
 
-        # Nếu có list staff_y (5 dòng y), chỉ nhận notehead gần vùng đó
         if staff_y is not None and len(staff_y) > 0:
             y0 = min(staff_y)
             y4 = max(staff_y)
@@ -305,26 +297,26 @@ def detect_notehead_contour(
                 continue
 
         if not _has_attached_stem(note_img, (x, y, w, h), unit):
-            # Whole notes/rare cases can still pass if the blob is sufficiently round and central.
-            if not (ar >= 0.85 and ar <= 1.20 and circularity >= 0.70 and solidity >= 0.75 and extent >= 0.40 and area >= 0.28 * unit * unit):
+            if not (
+                ar >= 0.85
+                and ar <= 1.20
+                and circularity >= 0.70
+                and solidity >= 0.75
+                and extent >= 0.40
+                and area >= 0.28 * unit * unit
+            ):
                 continue
 
         notehead_list.append((x, y, w, h, cx, cy))
 
     return _deduplicate_noteheads(notehead_list)
 
+
 def annotate_noteheads(
     img: np.ndarray,
     noteheads: List[NoteheadBBox],
 ) -> np.ndarray:
-    """
-    Vẽ bounding box và center các notehead lên ảnh crop staff để debug hoặc visualize.
-    Args:
-        img: input image (crop staff)
-        noteheads: list box notehead
-    Returns:
-        img_vis: ảnh đã annotate box/circle lên
-    """
+    """Draw notehead bounding boxes and centers for visualization."""
     img_vis = img.copy()
     if img_vis.ndim == 2:
         img_vis = cv2.cvtColor(img_vis, cv2.COLOR_GRAY2BGR)
@@ -332,6 +324,7 @@ def annotate_noteheads(
         cv2.rectangle(img_vis, (x, y), (x + w, y + h), (0, 0, 255), 2)
         cv2.circle(img_vis, (cx, cy), 2, (255, 0, 0), -1)
     return img_vis
+
 
 def notehead_detection_pipeline(
     img_no_staff: np.ndarray,
@@ -341,19 +334,10 @@ def notehead_detection_pipeline(
     max_area: int = 1200,
     aspect_ratio: Tuple[float, float] = (0.45, 1.8),
 ) -> List[NoteheadStaffResult]:
-    """
-    Pipeline tổng hợp: từ ảnh gốc đã loại staff line, cắt từng staff, detect notehead, trả về kết quả.
-    Args:
-        img_no_staff: Ảnh đã loại staff line (grayscale hoặc BGR)
-        staff_line: List các staff line (mỗi staff là list 5 y)
-        expand: Số pixel mở rộng vùng cắt trên/dưới so với y0/y4 của staff
-        min_area, max_area, aspect_ratio: Tham số lọc contour notehead
-    Returns:
-        List kết quả cho từng staff: (staff_index, list notehead box, staff_crop_img)
-    """
+    """Detect noteheads per staff from a no-staff image."""
     crop_entries = _crop_staffs_with_bounds(img_no_staff, staff_line, expand=expand)
     results: List[NoteheadStaffResult] = []
-    
+
     for idx, (staff_y, crop_entry) in enumerate(zip(staff_line, crop_entries)):
         crop, y_min, _ = crop_entry
         staff_y_local = [int(y - y_min) for y in staff_y]
@@ -366,5 +350,5 @@ def notehead_detection_pipeline(
         )
         annotated = annotate_noteheads(crop, noteheads)
         results.append((idx, staff_y, noteheads, annotated))
-        
+
     return results

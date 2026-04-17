@@ -1,17 +1,4 @@
-"""
-Kiểm thử luồng dữ liệu kép (Dual-Stream OMR Pipeline)
-Sử dụng:
-    cd /home/runner/work/do_an/do_an
-    python orm/test_dual_pipeline.py [path_to_image]
-Ảnh đầu vào mặc định: img_test/test0.png
-Các file xuất ra trong thư mục out_dual/:
-    <base>_staff_prob.png      — heatmap xác suất dòng kẻ (stream 1, kênh 1)
-    <base>_notehead_prob.png   — heatmap xác suất notehead (stream 2, kênh 1)
-    <base>_symbol_mask.png     — mask tổng hợp tất cả ký hiệu nhạc (stream 2)
-    <base>_staff_overlay.png   — ảnh gốc với dòng kẻ được vẽ đè (stream 1)
-    <base>_notehead_overlay.png— ảnh gốc với bounding box notehead (stream 2)
-    <base>_combined.png        — ảnh gốc với cả staff + notehead visualize
-"""
+
 import os
 import sys
 import time
@@ -86,8 +73,8 @@ def _prob_to_heatmap(prob_ch: np.ndarray) -> np.ndarray:
 staff_heatmap = _prob_to_heatmap(staff_prob[:, :, 1])
 cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_staff_prob.png", staff_heatmap)
 print(f"✔ {OUTPUT_DIR}/{base_name}_staff_prob.png")
-# 2. Notehead probability heatmap (channel 1 of stream 2)
-note_heatmap = _prob_to_heatmap(sem_map[:, :, 1])
+# 2. Notehead probability heatmap (channel 2 of stream 2)
+note_heatmap = _prob_to_heatmap(sem_map[:, :, 2])
 cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_notehead_prob.png", note_heatmap)
 print(f"✔ {OUTPUT_DIR}/{base_name}_notehead_prob.png")
 # 3. Symbol mask (all non-background from stream 2)

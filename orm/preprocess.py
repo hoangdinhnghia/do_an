@@ -7,16 +7,7 @@ def preprocess_image(
     img: np.ndarray,
     target_size: Optional[Tuple[int, int]] = None    # None = giữ nguyên ảnh gốc!
 ) -> np.ndarray:
-    """
-    Tiền xử lý ảnh nhạc: Chuyển sang grayscale, (nếu có) resize về kích thước đủ lớn, scale [0,1].
 
-    Args:
-        img: Ảnh đầu vào BGR/GRAY (np.ndarray uint8)
-        target_size: tuple (width, height) — nếu None sẽ giữ nguyên
-
-    Returns:
-        Ảnh đ�� chuẩn hóa về grayscale, float32, giá trị [0, 1]
-    """
     # Nếu là ảnh màu thì chuyển về grayscale
     if img.ndim == 3:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -47,17 +38,7 @@ def adaptive_binarize(
     block_size: int = 51,
     C: int = 10
 ) -> np.ndarray:
-    """
-    Nhị phân hóa ảnh bằng adaptive threshold (giúp làm nổi bật nét nhạc/dấu/cột lâu).
 
-    Args:
-        img: Ảnh grayscale, giá trị [0,1] hoặc [0,255]
-        block_size: Kích thước vùng local để xác định threshold (luôn lẻ, ví dụ 51)
-        C: Giá trị trừ đi cho threshold local (điều chỉnh độ nhạy)
-
-    Returns:
-        Ảnh nhị phân (dtype uint8), giá trị 0 hoặc 1.
-    """
     # Chuyển về [0,255] để cv2 xử lý
     if img.max() <= 1.0:
         img = (img * 255).astype('uint8')
@@ -85,18 +66,7 @@ def enhance_contrast(img: np.ndarray) -> np.ndarray:
 def remove_noise(image: np.ndarray, 
                  min_area: int = 5, 
                  morph_kernel_size: int = 1) -> np.ndarray:
-    """
-    Lọc bỏ nhiễu: Xoá các blob/chấm nhỏ có diện tích < min_area, 
-    đồng thời làm mềm cạnh qua morphology opening.
 
-    Args:
-        image: Ảnh nhị phân hoặc xám (uint8), giá trị 0/1 hoặc 0/255
-        min_area: Diện tích blob nhỏ tối đa bị coi là nhiễu (pixel)
-        morph_kernel_size: Size kernel (opening, erosion/dilation)
-
-    Returns:
-        Ảnh sau khi lọc nhiễu, shape và dtype không đổi
-    """
     # Đảm bảo ảnh nhị phân
     img = image.copy()
     if img.max() <= 1.0:
@@ -121,17 +91,7 @@ def remove_noise(image: np.ndarray,
 
 
 def sharpen(img: np.ndarray, alpha: float = 1.5, beta: float = -0.5, gamma: float = 0) -> np.ndarray:
-    """
-    Làm sắc nét ảnh xám bằng bộ lọc sharpening kernel hoặc unsharp masking.
-    
-    Args:
-        img: Ảnh grayscale, [0,1] hoặc [0,255], float32 hoặc uint8
-        alpha: trọng số ảnh gốc (default 1.5)
-        beta: trọng số ảnh làm mờ (default -0.5)
-        gamma: offset cộng vào (default 0)
-    Returns:
-        Ảnh sau khi làm nét, cùng dtype đầu vào
-    """
+
     # Chuyển về [0,255] float32 để lọc chuẩn
     if img.max() <= 1.0:
         img_proc = (img * 255).astype(np.float32)

@@ -3,7 +3,7 @@ from orm.preprocess import preprocess_image
 from orm.preprocess import adaptive_binarize, remove_noise, sharpen
 
 # Đọc ảnh gốc
-img = cv2.imread('img_test/test1.png')   # Đổi path thành đúng tên ảnh gốc
+img = cv2.imread('img_test/test0.png')   # Đổi path thành đúng tên ảnh gốc
 
 # Tiền xử lý KHÔNG resize hoặc resize lớn (ví dụ 1087x768)
 img_prep = preprocess_image(img)   # Hay target_size=None nếu giữ nguyên
@@ -20,4 +20,4 @@ cv2.imwrite('out/test_bin.png', img_bin * 255)
 img_denoised = remove_noise(img_bin)
 cv2.imwrite('out/test_bin_denoised.png', img_denoised * 255)
 
-print("Đã lưu test_bin.png — Ảnh nhị phân hóa adaptive, nét nhạc và nốt phải nổi bật, nền thành trắng sạch.")
+print("Đã lưu test_bin.png")

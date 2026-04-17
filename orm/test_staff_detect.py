@@ -131,7 +131,7 @@ def process_one_image(img: np.ndarray):
 
 # ========================= MAIN =========================
 
-INPUT_PATH = 'img_test/test8.png'
+INPUT_PATH = 'img_test/test0.png'
 os.makedirs('out', exist_ok=True)
 
 ext = os.path.splitext(INPUT_PATH)[1].lower()
