@@ -1,4 +1,4 @@
-import logger
+from orm import logger
 
 log = logger.get_logger("test", level="debug")
 

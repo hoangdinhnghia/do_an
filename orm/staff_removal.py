@@ -186,10 +186,18 @@ def staff_removal_pipeline(
     )
 
     if repair and staff_lines:
-        # Ước lượng độ dày từ staff đầu tiên để dùng làm tham số repair
-        sorted_st = sorted(staff_lines[0])
-        spacings = np.diff(sorted_st)
-        thickness = max(2, int(np.median(spacings) * _LINE_THICKNESS_RATIO) + thickness_margin) if len(spacings) else 2
+        # Estimate line thickness from all staffs and take the median so that
+        # the repair kernel is representative for the whole page (not just the
+        # first staff, which may have an atypical spacing).
+        all_spacings: list = []
+        for st in staff_lines:
+            sorted_st = sorted(st)
+            all_spacings.extend(np.diff(sorted_st).tolist())
+        thickness = (
+            max(2, int(np.median(all_spacings) * _LINE_THICKNESS_RATIO) + thickness_margin)
+            if all_spacings
+            else 2
+        )
         removed = repair_noteheads(removed, thickness=thickness)
 
     return removed

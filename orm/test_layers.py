@@ -1,5 +1,5 @@
 import numpy as np
-import layers
+from orm import layers
 
 # Đăng ký một layer mới
 layers.register_layer("test", np.zeros((3, 3)))

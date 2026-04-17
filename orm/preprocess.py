@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 from typing import Optional, Tuple
-from PIL import Image
 
 def preprocess_image(
     img: np.ndarray,
@@ -15,27 +14,15 @@ def preprocess_image(
         target_size: tuple (width, height) — nếu None sẽ giữ nguyên
 
     Returns:
-        Ảnh đ�� chuẩn hóa về grayscale, float32, giá trị [0, 1]
+        Ảnh đã chuẩn hóa về grayscale, float32, giá trị [0, 1]
     """
     # Nếu là ảnh màu thì chuyển về grayscale
     if img.ndim == 3:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
+
     # Resize nếu được yêu cầu
-    def resize_image(img: Image.Image):
-        # Estimate target size with number of pixels.
-        # Best number would be 3M~4.35M pixels.
-        w, h = img.size
-        pis = w * h
-        if 3000000 <= pis <= 435000:
-            return img
-        lb = 3000000 / pis
-        ub = 4350000 / pis
-        ratio = pow((lb + ub) / 2, 0.5)
-        tar_w = round(ratio * w)
-        tar_h = round(ratio * h)
-        print(tar_w, tar_h)
-        return img.resize((tar_w, tar_h))
+    if target_size is not None:
+        img = cv2.resize(img, target_size, interpolation=cv2.INTER_AREA)
 
     # Chuẩn hóa về [0, 1] kiểu float32
     img = img.astype(np.float32) / 255.0

@@ -1,7 +1,6 @@
-from typing import Tuple
+from typing import Any, List, Tuple
 import os
 import logging
-from .staff_detection import Staff
 
 import cv2
 import numpy as np
@@ -23,11 +22,17 @@ def count(data, intervals):
     return occur
 
 
-def find_closest_staffs(x: int, y: int) -> Tuple[Staff, Staff]:
+# NOTE: find_closest_staffs / get_unit_size / get_global_unit_size /
+# get_total_track_nums are legacy helpers that rely on the old oemer
+# ``layers`` registry (``layers.register_layer('staffs', ...)``) which is
+# no longer populated by the current dual U-Net pipeline.  They are kept
+# for reference but are NOT called by any active pipeline code.
+
+def find_closest_staffs(x: int, y: int) -> Tuple[Any, Any]:
     staffs = layers.get_layer('staffs')
 
     staffs = staffs.reshape(-1, 1).squeeze()
-    diffs = sorted(staffs, key=lambda st: st - [x, y])
+    diffs = sorted(staffs, key=lambda st: abs(st.y_center - y))
     if len(diffs) == 1:
         return diffs[0], diffs[0]
     elif len(diffs) == 2:
@@ -53,9 +58,9 @@ def find_closest_staffs(x: int, y: int) -> Tuple[Staff, Staff]:
             return first, third
         else:
             return first, first
-   
-   
-##Xác định "unit size" tại một điểm bất kỳ (dựa vào vị trí so với các staff lines gần nhất).     
+
+
+##Xác định "unit size" tại một điểm bất kỳ (dựa vào vị trí so với các staff lines gần nhất).
 def get_unit_size(x: int, y: int) -> float:
     st1, st2 = find_closest_staffs(x, y)
     if st1.y_center == st2.y_center:
@@ -74,6 +79,7 @@ def get_unit_size(x: int, y: int) -> float:
     unit_size = w1 * st1.unit_size + w2 * st2.unit_size
     return float(unit_size)
 
+
 # trung bình cộng của tất cả unit size của các staff
 def get_global_unit_size() -> float:
     staffs = layers.get_layer('staffs')
@@ -83,7 +89,7 @@ def get_global_unit_size() -> float:
     return sum(usize) / len(usize)
 
 
-# Đếm số lượng track (dựa vào trường track của staff). Nếu có 5 staff thì có thể có 5 track, nhưng nếu có 10 staff thì có thể chỉ có 5 track (vì mỗi track có thể có nhiều staff).
+# Đếm số lượng track (dựa vào trường track của staff).
 def get_total_track_nums() -> int:
     staffs = layers.get_layer('staffs')
     tracks = [st.track for st in staffs.reshape(-1, 1).squeeze()]
