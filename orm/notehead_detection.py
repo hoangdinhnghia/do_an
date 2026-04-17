@@ -1,100 +1,116 @@
+"""Notehead detection from the Detailed Semantic U-Net (Stream 2).
+
+The Detailed Semantic Model (2nd_model.onnx) produces a (H, W, 4) float32
+probability map where, for each pixel:
+
+    channel 0 = background
+    channel 1 = stem / beam
+    channel 2 = notehead   ← primary channel used here
+    channel 3 = other symbol (clef, accidental, rest …)
+
+Public API
+----------
+    extract_noteheads_from_prob_map()  — threshold + filter blobs from a semantic map
+    annotate_noteheads()               — draw bounding boxes on an image for visualisation
+    notehead_detection_pipeline()      — end-to-end per-staff detection via U-Net
+    _assign_noteheads_to_staves()      — assign global noteheads to nearest staff
+"""
+
+from __future__ import annotations
+
 import cv2
 import numpy as np
 from typing import List, Optional, Tuple
 
-from orm.staff_detection import crop_staffs
+from .staff_detection import crop_staffs
 
-# Định nghĩa NoteheadBBox: (x, y, w, h, cx, cy)
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+# Notehead bounding box: (x, y, w, h, cx, cy)
 NoteheadBBox = Tuple[int, int, int, int, int, int]
 
-# Kết quả cho một staff: (staff_index, staff_y_lines, noteheads, crop_img)
+# Per-staff result: (staff_index, staff_y_lines, noteheads, annotated_crop)
 NoteheadStaffResult = Tuple[int, List[int], List[NoteheadBBox], np.ndarray]
 
-def detect_notehead_contour(
-    staff_crop_img: np.ndarray,
-    staff_y: Optional[List[int]] = None,
-    min_area: int = 18,
-    max_area: int = 1200,
-    aspect_ratio: Tuple[float, float] = (0.45, 1.8),
+# Default notehead channel in 2nd_model.onnx (verified empirically)
+_NOTEHEAD_CHANNEL = 2
+
+# ---------------------------------------------------------------------------
+# Core detection function
+# ---------------------------------------------------------------------------
+
+def extract_noteheads_from_prob_map(
+    prob_map: np.ndarray,
+    notehead_channel: int = _NOTEHEAD_CHANNEL,
+    conf_thresh: float = 0.4,
+    min_area: int = 12,
+    max_area: int = 2000,
+    aspect_ratio: Tuple[float, float] = (0.35, 2.0),
 ) -> List[NoteheadBBox]:
-    """
-    Detect noteheads from a cropped staff image with robust morphological and shape filtering.
+    """Detect noteheads from a U-Net semantic probability map.
+
+    Thresholds the notehead channel of *prob_map*, closes small intra-blob
+    gaps with a morphological close, then filters connected components by
+    area, aspect ratio, and circularity to retain only notehead-shaped blobs.
+
     Args:
-        staff_crop_img: Ảnh crop staff (grayscale, binary hoặc BGR)
-        staff_y: List 5 dòng staff (giúp lọc note ngoài staff)
-        min_area, max_area: Kích thước diện tích contour note hợp lệ
-        aspect_ratio: Tỉ lệ width/height chấp nhận của notehead
+        prob_map         : (H, W, C) float32 output of
+                           ``DetailedSemanticModel.predict_full()``.
+        notehead_channel : Index of the notehead probability channel
+                           (default 2 for 2nd_model.onnx).
+        conf_thresh      : Minimum notehead probability for a pixel to be "on".
+        min_area         : Minimum blob area in pixels.
+        max_area         : Maximum blob area in pixels.
+        aspect_ratio     : Acceptable (min, max) width/height ratio.
+
     Returns:
-        List tuple (x, y, w, h, cx, cy) cho từng notehead phát hiện được
+        List of ``(x, y, w, h, cx, cy)`` tuples in image coordinates.
     """
-    # 1. Chuyển về gray nếu là RGB
-    if staff_crop_img.ndim == 3:
-        gray = cv2.cvtColor(staff_crop_img, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = staff_crop_img.copy()
+    mask = (prob_map[:, :, notehead_channel] >= conf_thresh).astype(np.uint8) * 255
 
-    # 2. Stretch gray về uint8, nhị phân hóa: foreground (note+staff) sẽ là trắng
-    if gray.max() <= 1.0:
-        gray = (gray * 255).astype(np.uint8)
-    else:
-        gray = gray.astype(np.uint8)
-    _, fg = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # Close small intra-blob gaps
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
 
-    # 3. Loại net staffline bằng morphological open ngang
-    line_kernel_w = max(15, staff_crop_img.shape[1] // 18)
-    hor_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (line_kernel_w, 1))
-    staff_mask = cv2.morphologyEx(fg, cv2.MORPH_OPEN, hor_kernel)
-    note_img = cv2.subtract(fg, staff_mask)
-
-    # 4. Làm kín nhanh để vá các hole nhỏ trong notehead
-    note_img = cv2.morphologyEx(note_img, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-
-    contours, _ = cv2.findContours(note_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    notehead_list: List[NoteheadBBox] = []
-
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    results: List[NoteheadBBox] = []
     for c in contours:
-        x, y, w, h = cv2.boundingRect(c)
         area = cv2.contourArea(c)
-        ar = (w / h) if h else 0.0
-
         if area < min_area or area > max_area:
             continue
+        x, y, w, h = cv2.boundingRect(c)
+        ar = (w / h) if h else 0.0
         if ar < aspect_ratio[0] or ar > aspect_ratio[1]:
             continue
-
-        # Thêm lọc compactness/circularity loại bỏ stem, slur, ký hiệu phụ
         perimeter = cv2.arcLength(c, True)
         if perimeter <= 0:
             continue
         circularity = 4.0 * np.pi * area / (perimeter * perimeter)
-        if circularity < 0.18:
+        if circularity < 0.15:
             continue
+        results.append((x, y, w, h, x + w // 2, y + h // 2))
+    return results
 
-        cx, cy = x + w // 2, y + h // 2
 
-        # Nếu có list staff_y (5 dòng y), chỉ nhận notehead gần vùng đó
-        if staff_y is not None and len(staff_y) > 0:
-            y0 = min(staff_y)
-            y4 = max(staff_y)
-            pad = max(14, int((y4 - y0) * 0.9))
-            if not (y0 - pad <= cy <= y4 + pad):
-                continue
-
-        notehead_list.append((x, y, w, h, cx, cy))
-
-    return notehead_list
+# ---------------------------------------------------------------------------
+# Visualisation helper
+# ---------------------------------------------------------------------------
 
 def annotate_noteheads(
     img: np.ndarray,
     noteheads: List[NoteheadBBox],
 ) -> np.ndarray:
-    """
-    Vẽ bounding box và center các notehead lên ảnh crop staff để debug hoặc visualize.
+    """Draw bounding boxes and center dots on an image for visualisation.
+
     Args:
-        img: input image (crop staff)
-        noteheads: list box notehead
+        img       : Source image (BGR or grayscale).
+        noteheads : List of ``(x, y, w, h, cx, cy)`` bounding boxes.
+
     Returns:
-        img_vis: ảnh đã annotate box/circle lên
+        Copy of *img* with each notehead marked with a red bounding box
+        and a blue center dot.
     """
     img_vis = img.copy()
     if img_vis.ndim == 2:
@@ -105,39 +121,99 @@ def annotate_noteheads(
     return img_vis
 
 
-def notehead_detection_pipeline(
-    img_no_staff: np.ndarray,
+# ---------------------------------------------------------------------------
+# Staff assignment helper
+# ---------------------------------------------------------------------------
+
+def _assign_noteheads_to_staves(
+    noteheads: List[NoteheadBBox],
     staff_lines: List[List[int]],
-    expand: int = 20,
-    min_area: int = 18,
-    max_area: int = 1200,
-    aspect_ratio: Tuple[float, float] = (0.45, 1.8),
-) -> List[NoteheadStaffResult]:
-    """
-    Pipeline phát hiện notehead trên toàn bộ các staff.
+) -> List[List[NoteheadBBox]]:
+    """Assign each global notehead to its nearest staff by y-centroid proximity.
+
+    For each notehead centroid ``cy`` the vertical distance to the centre of
+    every staff is computed and the notehead is assigned to the closest staff.
+    Notes that fall outside a staff bounding box (e.g. ledger lines) are still
+    assigned to the nearest staff, letting the pitch module handle them.
 
     Args:
-        img_no_staff: Ảnh nhị phân (0/255) đã xóa dòng kẻ.
-        staff_lines:  Danh sách staff, mỗi staff là list 5 tọa độ y.
-        expand:       Số pixel mở rộng khi crop mỗi staff.
-        min_area, max_area, aspect_ratio: Tham số lọc notehead.
+        noteheads   : List of ``(x, y, w, h, cx, cy)`` in global image coords.
+        staff_lines : List of staves; each staff is a list of 5 y-coords.
 
     Returns:
-        List NoteheadStaffResult — mỗi phần tử là
-        (staff_index, staff_y_lines, noteheads, annotated_crop).
+        List of the same length as *staff_lines*, where each element is the
+        sub-list of noteheads assigned to that staff.
     """
-    crops = crop_staffs(img_no_staff, staff_lines, expand=expand)
-    results: List[NoteheadStaffResult] = []
+    per_staff: List[List[NoteheadBBox]] = [[] for _ in staff_lines]
+    if not staff_lines or not noteheads:
+        return per_staff
 
-    for idx, (staff_y, crop) in enumerate(zip(staff_lines, crops)):
-        noteheads = detect_notehead_contour(
-            crop,
-            staff_y=None,  # crop đã được cắt theo staff; không cần lọc thêm
-            min_area=min_area,
-            max_area=max_area,
-            aspect_ratio=aspect_ratio,
+    staff_centers = [float(sum(s)) / len(s) for s in staff_lines]
+    for nh in noteheads:
+        cy = nh[5]
+        best_idx = int(
+            min(range(len(staff_centers)), key=lambda i: abs(staff_centers[i] - cy))
         )
-        annotated = annotate_noteheads(crop, noteheads)
-        results.append((idx, staff_y, noteheads, annotated))
+        per_staff[best_idx].append(nh)
+    return per_staff
 
+
+# ---------------------------------------------------------------------------
+# End-to-end pipeline
+# ---------------------------------------------------------------------------
+
+def notehead_detection_pipeline(
+    img_bgr: np.ndarray,
+    staff_lines: List[List[int]],
+    semantic_model=None,
+    conf_thresh: float = 0.4,
+    overlap: int = 64,
+    max_side: Optional[int] = 2048,
+) -> List[NoteheadStaffResult]:
+    """Detect and assign noteheads to staves using the Detailed Semantic U-Net.
+
+    Runs the Detailed Semantic Model (2nd_model.onnx) on the full image to
+    produce a semantic probability map, extracts all noteheads via
+    :func:`extract_noteheads_from_prob_map`, then assigns each notehead to
+    its nearest staff using :func:`_assign_noteheads_to_staves`.
+
+    Args:
+        img_bgr        : Full input image (BGR uint8).
+        staff_lines    : List of staves; each staff is a list of 5 y-coords
+                         (from
+                         :class:`~orm.model_inference.StafflineSegmentationModel`).
+        semantic_model : Pre-loaded
+                         :class:`~orm.model_inference.DetailedSemanticModel`
+                         instance. Created automatically if *None*.
+        conf_thresh    : Notehead confidence threshold.
+        overlap        : Tile-and-stitch overlap in pixels.
+        max_side       : Maximum image side before auto-downscaling.
+
+    Returns:
+        List of ``(staff_index, staff_y_lines, noteheads, annotated_crop)``
+        tuples, one per staff.  Noteheads are in *global* image coordinates.
+        The annotated crop is the staff region extracted from *img_bgr* with
+        all detected noteheads drawn on top.
+    """
+    # Lazy import avoids a circular dependency at module load time.
+    from .model_inference import DetailedSemanticModel
+
+    if semantic_model is None:
+        semantic_model = DetailedSemanticModel()
+
+    prob_map = semantic_model.predict_full(img_bgr, overlap=overlap, max_side=max_side)
+    all_noteheads = extract_noteheads_from_prob_map(prob_map, conf_thresh=conf_thresh)
+    per_staff = _assign_noteheads_to_staves(all_noteheads, staff_lines)
+
+    # Annotate all noteheads on a copy of the full image, then crop per staff.
+    # Drawing on the full image before cropping avoids any coordinate-offset
+    # arithmetic while still producing correctly positioned bounding boxes.
+    img_annotated = annotate_noteheads(img_bgr, all_noteheads)
+    annotated_crops = crop_staffs(img_annotated, staff_lines)
+
+    results: List[NoteheadStaffResult] = []
+    for idx, (staff_y, noteheads, crop_ann) in enumerate(
+        zip(staff_lines, per_staff, annotated_crops)
+    ):
+        results.append((idx, staff_y, noteheads, crop_ann))
     return results

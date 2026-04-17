@@ -17,7 +17,6 @@ from orm.staff_detection import(
 from orm.staff_removal import staff_removal_pipeline
 from orm.notehead_detection import notehead_detection_pipeline
 
-
 def load_input_image(path: str) -> np.ndarray:
     img = cv2.imread(path)
     if img is None:
@@ -67,8 +66,8 @@ def process_one_image(img: np.ndarray):
     # ==== STAFF REMOVAL ====
     img_no_staff = staff_removal_pipeline(img_bin_255, staff_lines)
 
-    # ==== NOTEHEAD DETECTION ====
-    notehead_results = notehead_detection_pipeline(img_no_staff, staff_lines, expand=20)
+    # ==== NOTEHEAD DETECTION (U-Net Stream 2) ====
+    notehead_results = notehead_detection_pipeline(img, staff_lines)
 
     # ==== GROUP GRAND STAFF ====
     grand_staffs = group_grand_staff(staff_lines, img_bin=img_bin_255)

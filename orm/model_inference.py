@@ -44,6 +44,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+from .notehead_detection import extract_noteheads_from_prob_map
 from .staff_detection import find_peaks_profile, group_peaks_to_staffs, refine_staff_lines
 
 # ---------------------------------------------------------------------------
@@ -318,9 +319,8 @@ class DetailedSemanticModel:
     ) -> List[Tuple[int, int, int, int, int, int]]:
         """Detect individual noteheads from a semantic probability map.
 
-        Pixels where the notehead-channel probability exceeds *conf_thresh* are
-        binarised and grouped into connected components. Each component is then
-        filtered by area, aspect ratio, and circularity.
+        Delegates to :func:`orm.notehead_detection.extract_noteheads_from_prob_map`
+        using this model's notehead channel index.
 
         Args:
             prob_map     : Output of predict_full() — (H, W, 4) float32.
@@ -331,34 +331,15 @@ class DetailedSemanticModel:
 
         Returns:
             List of (x, y, w, h, cx, cy) tuples — one per detected notehead.
-            The schema matches the output of notehead_detection.py.
         """
-        mask = (
-            prob_map[:, :, self.NOTEHEAD_CHANNEL] >= conf_thresh
-        ).astype(np.uint8) * 255
-
-        # Close small intra-blob gaps
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
-
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        results: List[Tuple[int, int, int, int, int, int]] = []
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < min_area or area > max_area:
-                continue
-            x, y, w, h = cv2.boundingRect(c)
-            ar = (w / h) if h else 0.0
-            if ar < aspect_ratio[0] or ar > aspect_ratio[1]:
-                continue
-            perimeter = cv2.arcLength(c, True)
-            if perimeter <= 0:
-                continue
-            circularity = 4.0 * np.pi * area / (perimeter * perimeter)
-            if circularity < 0.15:
-                continue
-            results.append((x, y, w, h, x + w // 2, y + h // 2))
-        return results
+        return extract_noteheads_from_prob_map(
+            prob_map,
+            notehead_channel=self.NOTEHEAD_CHANNEL,
+            conf_thresh=conf_thresh,
+            min_area=min_area,
+            max_area=max_area,
+            aspect_ratio=aspect_ratio,
+        )
 
     def extract_symbol_mask(
         self,

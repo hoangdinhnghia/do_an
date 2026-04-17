@@ -59,6 +59,7 @@ from .model_inference import (
     StafflineSegmentationModel,
     run_dual_pipeline,
 )
+from .notehead_detection import _assign_noteheads_to_staves
 from .pitch import Clef, assign_pitches_to_staff
 from .staff_detection import crop_staffs
 
@@ -71,52 +72,6 @@ _DEFAULT_STAFF_THRESH = 0.30
 _DEFAULT_NOTE_THRESH = 0.40
 _DEFAULT_OVERLAP = 64
 _DEFAULT_MAX_SIDE = 2048
-
-# Half-height of a staff system (in units of median inter-line spacing) used
-# when deciding which staff "owns" a notehead that falls between two staves.
-_STAFF_OWNERSHIP_HALF_SPAN = 4.0
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _assign_noteheads_to_staves(
-    noteheads: List[Tuple[int, int, int, int, int, int]],
-    staff_lines: List[List[int]],
-) -> List[List[Tuple[int, int, int, int, int, int]]]:
-    """Assign each global notehead to its nearest staff.
-
-    For each notehead centroid cy we compute the vertical distance to the
-    centre of every staff and assign the notehead to the closest one.  A note
-    falls outside the staff "bounding box" if its cy is far enough from the
-    staff centre; in that case it is still assigned to the nearest staff,
-    which lets the pitch module handle ledger lines correctly.
-
-    Args:
-        noteheads   : List of (x, y, w, h, cx, cy) in image coordinates.
-        staff_lines : List of staves; each staff is a list of 5 y-coords.
-
-    Returns:
-        List of the same length as *staff_lines*, where each element is the
-        sub-list of noteheads assigned to that staff.
-    """
-    per_staff: List[List[Tuple[int, int, int, int, int, int]]] = [
-        [] for _ in staff_lines
-    ]
-    if not staff_lines or not noteheads:
-        return per_staff
-
-    staff_centers = [float(sum(s)) / len(s) for s in staff_lines]
-
-    for nh in noteheads:
-        cy = nh[5]
-        best_idx = int(
-            min(range(len(staff_centers)), key=lambda i: abs(staff_centers[i] - cy))
-        )
-        per_staff[best_idx].append(nh)
-
-    return per_staff
-
 
 # ---------------------------------------------------------------------------
 # OMRPipeline
