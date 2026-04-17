@@ -1,7 +1,11 @@
 import cv2
 import numpy as np
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from .bbox import merge_nearby_bbox, rm_merge_overlap_bbox
+from .constant import M2_CH_NOTEHEAD, NOTE_CONF_THRESH
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 # Định nghĩa NoteheadBBox: (x, y, w, h, cx, cy)
 NoteheadBBox = Tuple[int, int, int, int, int, int]
@@ -368,3 +372,205 @@ def notehead_detection_pipeline(
         results.append((idx, staff_y, noteheads, annotated))
         
     return results
+
+
+# ---------------------------------------------------------------------------
+# Semantic-map-based notehead extraction
+# ---------------------------------------------------------------------------
+
+def extract_noteheads_from_semantic_map(
+    semantic_prob: np.ndarray,
+    staff_lines: Optional[List[List[int]]] = None,
+    conf_thresh: float = NOTE_CONF_THRESH,
+    min_area: int = 12,
+    max_area: int = 2000,
+    aspect_ratio: Tuple[float, float] = (0.35, 2.0),
+    min_circularity: float = 0.15,
+) -> List[NoteheadBBox]:
+    """Extract notehead bounding boxes directly from the semantic probability map.
+
+    This function uses the model's notehead channel (ch 1) instead of the
+    binary-image-after-staff-removal approach used by
+    ``detect_notehead_contour``.  It gives cleaner results on pages where the
+    CV-based staff removal leaves artefacts.
+
+    Parameters
+    ----------
+    semantic_prob:
+        (H, W, 4) float32 probability map from the semantic model.
+    staff_lines:
+        Optional list of staff systems.  When provided the results are filtered
+        to noteheads whose centre falls within a staff region.
+    conf_thresh:
+        Binarisation threshold for the notehead channel.
+    min_area, max_area:
+        Blob area filter (pixels).
+    aspect_ratio:
+        Allowed (w/h) range.
+    min_circularity:
+        Minimum 4πA/P² circularity to reject elongated stems/beams.
+
+    Returns
+    -------
+    List of ``(x, y, w, h, cx, cy)`` tuples.
+    """
+    mask = (semantic_prob[:, :, M2_CH_NOTEHEAD] >= conf_thresh).astype(np.uint8) * 255
+
+    # Morphological closing to unite small gaps within one notehead blob
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    results: List[NoteheadBBox] = []
+
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < min_area or area > max_area:
+            continue
+        x, y, w, h = cv2.boundingRect(c)
+        ar = (w / h) if h else 0.0
+        if ar < aspect_ratio[0] or ar > aspect_ratio[1]:
+            continue
+        perimeter = cv2.arcLength(c, True)
+        if perimeter <= 0:
+            continue
+        circularity = 4.0 * np.pi * area / (perimeter * perimeter)
+        if circularity < min_circularity:
+            continue
+        cx, cy = x + w // 2, y + h // 2
+        results.append((x, y, w, h, cx, cy))
+
+    # Optional: filter to staff regions
+    if staff_lines:
+        results = _filter_to_staff_regions(results, staff_lines)
+
+    return _deduplicate_noteheads(results)
+
+
+def _filter_to_staff_regions(
+    noteheads: List[NoteheadBBox],
+    staff_lines: List[List[int]],
+) -> List[NoteheadBBox]:
+    """Keep only noteheads whose centre falls near a staff system."""
+    kept: List[NoteheadBBox] = []
+    for bbox in noteheads:
+        x, y, w, h, cx, cy = bbox
+        accepted = False
+        for staff_y in staff_lines:
+            sorted_y = sorted(staff_y)
+            unit = float(np.median(np.diff(sorted_y))) if len(sorted_y) >= 2 else 10.0
+            pad = max(int(1.5 * unit), int((sorted_y[-1] - sorted_y[0]) * 0.25))
+            if sorted_y[0] - pad <= cy <= sorted_y[-1] + pad:
+                accepted = True
+                break
+        if accepted:
+            kept.append(bbox)
+    return kept
+
+
+# ---------------------------------------------------------------------------
+# Fused pipeline: combine CV + model-driven detections
+# ---------------------------------------------------------------------------
+
+def fused_notehead_detection_pipeline(
+    img_no_staff: np.ndarray,
+    staff_lines: List[List[int]],
+    semantic_prob: Optional[np.ndarray] = None,
+    expand: int = 20,
+    note_conf_thresh: float = NOTE_CONF_THRESH,
+    min_area: int = 18,
+    max_area: int = 1200,
+    aspect_ratio: Tuple[float, float] = (0.45, 1.8),
+) -> List[NoteheadStaffResult]:
+    """Fused notehead detection combining classic CV and semantic-model detections.
+
+    If *semantic_prob* is provided this function:
+    1. Runs the classic CV pipeline (``notehead_detection_pipeline``).
+    2. Runs the model-driven extraction (``extract_noteheads_from_semantic_map``).
+    3. Merges the two result sets per staff by deduplication (IoU-based NMS).
+
+    When *semantic_prob* is None this falls back to the classic CV pipeline.
+
+    Parameters
+    ----------
+    img_no_staff:
+        Binary image (uint8, foreground = 255) after staff removal.
+    staff_lines:
+        Detected staff systems.
+    semantic_prob:
+        (H, W, 4) float32 from the semantic model (optional).
+    expand:
+        Crop margin for classic CV pipeline.
+    note_conf_thresh:
+        Binarisation threshold for semantic notehead channel.
+    min_area, max_area, aspect_ratio:
+        Classic CV contour filters.
+
+    Returns
+    -------
+    List of ``(staff_idx, staff_y, noteheads, annotated)`` tuples.
+    """
+    # --- Classic CV detections (per-staff crops) ---
+    cv_results: List[NoteheadStaffResult] = notehead_detection_pipeline(
+        img_no_staff, staff_lines, expand=expand,
+        min_area=min_area, max_area=max_area, aspect_ratio=aspect_ratio,
+    )
+
+    if semantic_prob is None:
+        return cv_results
+
+    # --- Model-driven detections (full image) ---
+    model_noteheads_all: List[NoteheadBBox] = extract_noteheads_from_semantic_map(
+        semantic_prob,
+        staff_lines=staff_lines,
+        conf_thresh=note_conf_thresh,
+        min_area=min_area,
+        max_area=max_area,
+        aspect_ratio=aspect_ratio,
+    )
+
+    # Assign model-driven noteheads to their nearest staff system
+    model_per_staff: Dict[int, List[NoteheadBBox]] = {
+        i: [] for i in range(len(staff_lines))
+    }
+    for bbox in model_noteheads_all:
+        x, y, w, h, cx, cy = bbox
+        best_idx, best_dist = 0, float("inf")
+        for si, staff_y in enumerate(staff_lines):
+            sc = float(np.mean(staff_y))
+            dist = abs(cy - sc)
+            if dist < best_dist:
+                best_dist, best_idx = dist, si
+        model_per_staff[best_idx].append(bbox)
+
+    # --- Merge CV + model per staff ---
+    fused_results: List[NoteheadStaffResult] = []
+    for cv_entry in cv_results:
+        idx, staff_y, cv_noteheads, _ = cv_entry
+        model_noteheads = model_per_staff.get(idx, [])
+        merged = _deduplicate_noteheads(cv_noteheads + model_noteheads, iou_thr=0.35)
+        merged.sort(key=lambda b: (b[1], b[0]))   # sort top-left to bottom-right
+
+        # Build annotated crop from original (use whole-image view for annotating)
+        h_img, w_img = img_no_staff.shape[:2]
+        sorted_y_s = sorted(staff_y)
+        unit = float(np.median(np.diff(sorted_y_s))) if len(sorted_y_s) >= 2 else 10.0
+        pad = max(expand, int(round(3.5 * unit)))
+        y_min = max(0, sorted_y_s[0] - pad)
+        y_max = min(h_img - 1, sorted_y_s[-1] + pad)
+        crop_ann = img_no_staff[y_min : y_max + 1, :]
+        if crop_ann.ndim == 2:
+            crop_ann = cv2.cvtColor(crop_ann, cv2.COLOR_GRAY2BGR)
+
+        # Translate global bbox to crop coords for annotation
+        local_noteheads = [
+            (x, y - y_min, w, h, cx, cy - y_min)
+            for (x, y, w, h, cx, cy) in merged
+        ]
+        annotated = annotate_noteheads(crop_ann, local_noteheads)
+
+        fused_results.append((idx, staff_y, merged, annotated))
+        logger.debug("Staff %d: CV=%d model=%d fused=%d",
+                     idx, len(cv_noteheads), len(model_noteheads), len(merged))
+
+    return fused_results

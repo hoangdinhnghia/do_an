@@ -126,12 +126,12 @@ class TestUnitSaveOutputs:
             (0, [80, 90, 100, 110, 120], [(100, 80, 12, 10, 106, 85)], synthetic_bgr_image)
         ]
         _save_outputs(
-            synthetic_bgr_image,
-            staff_lines,
-            notehead_results,
-            synthetic_staff_prob_map,
-            synthetic_semantic_map,
-            tmp_path,
+            img_bgr=synthetic_bgr_image,
+            staff_lines=staff_lines,
+            notehead_results=notehead_results,
+            staff_prob=synthetic_staff_prob_map,
+            semantic_prob=synthetic_semantic_map,
+            out_dir=tmp_path,
             base="test_img",
         )
         expected_files = [
@@ -141,6 +141,8 @@ class TestUnitSaveOutputs:
             "test_img_staff_overlay.png",
             "test_img_notehead_overlay.png",
             "test_img_combined.png",
+            "test_img_pitch_overlay.png",
+            "test_img_full_annotation.png",
         ]
         for fname in expected_files:
             fpath = tmp_path / fname
@@ -149,6 +151,27 @@ class TestUnitSaveOutputs:
             img = cv2.imread(str(fpath))
             assert img is not None, f"Output file is not a valid image: {fname}"
             assert img.shape[0] > 0 and img.shape[1] > 0
+
+    def test_creates_pitch_overlay_with_labels(
+        self, tmp_path, synthetic_bgr_image,
+        synthetic_staff_prob_map, synthetic_semantic_map
+    ):
+        """When pitch_results are provided the pitch overlay must be written."""
+        staff_lines = [[80, 90, 100, 110, 120]]
+        noteheads = [(100, 80, 12, 10, 106, 85)]
+        notehead_results = [(0, [80, 90, 100, 110, 120], noteheads, synthetic_bgr_image)]
+        pitch_results     = [(0, [80, 90, 100, 110, 120], noteheads, synthetic_bgr_image, ["G4"])]
+        _save_outputs(
+            img_bgr=synthetic_bgr_image,
+            staff_lines=staff_lines,
+            notehead_results=notehead_results,
+            staff_prob=synthetic_staff_prob_map,
+            semantic_prob=synthetic_semantic_map,
+            out_dir=tmp_path,
+            base="test_pitch",
+            pitch_results=pitch_results,
+        )
+        assert (tmp_path / "test_pitch_pitch_overlay.png").exists()
 
 
 class TestUnitLoadImage:
@@ -183,7 +206,7 @@ class TestIntegrationFullPipeline:
         assert Path(out).is_dir(), f"run() returned non-existent directory: {out}"
 
     def test_run_creates_all_output_files(self, real_image_path, tmp_path):
-        """All 6 visualisation PNGs must be created by run()."""
+        """All 8 visualisation PNGs must be created by run()."""
         run(str(real_image_path), output_path=str(tmp_path))
         base = real_image_path.stem
         expected = [
@@ -193,6 +216,8 @@ class TestIntegrationFullPipeline:
             f"{base}_staff_overlay.png",
             f"{base}_notehead_overlay.png",
             f"{base}_combined.png",
+            f"{base}_pitch_overlay.png",
+            f"{base}_full_annotation.png",
         ]
         for fname in expected:
             fpath = tmp_path / fname
